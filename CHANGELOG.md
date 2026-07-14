@@ -5,6 +5,20 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-15
+
+### Breaking
+- CDP now uses native Swift URLSessionWebSocketTask — no Node.js or ws module needed
+
+### Fixed
+- Window targeting: Chrome-specific detection (prefers windows owned by Chrome), --window <id> flag for explicit targeting
+- React controlled inputs: chrome type uses native setter to trigger React's onChange handler
+- Container-scoped click: --container flag scopes click within a dialog/section
+- Non-blocking chrome record: returns immediately instead of blocking for full duration
+- Richer status: shows window name, elapsed time, frame count, file path, file size
+- Better error messages with actionable guidance
+- Removed Node.js/npm dependency from CI
+
 ## [1.1.2] - 2026-07-15
 
 ### Fixed

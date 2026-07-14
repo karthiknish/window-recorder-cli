@@ -53,18 +53,6 @@ jobs:
         run: |
           ~/.local/bin/wr --help
 
-      - name: Install e2e dependencies
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          cd e2e
-          npm install
-
-      - name: Verify e2e runner
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          cd e2e
-          node runner.js --help
-
       - name: Package artifacts
         if: steps.check.outputs.exists == 'false'
         run: |

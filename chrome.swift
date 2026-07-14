@@ -2,6 +2,7 @@ import Foundation
 
 // ─── Chrome CDP Integration ───────────────────────────────────────────
 // Shared CDP helpers and Chrome command functions used by wr.swift and mcp.swift
+// Uses native URLSessionWebSocketTask — no Node.js or ws module needed.
 
 let CDP_PORT = 9222
 let CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -38,106 +39,87 @@ func cdpGetFirstTab() -> [String: Any]? {
     return tabs.first { ($0["type"] as? String) == "page" } ?? tabs.first
 }
 
-// ─── CDP Communication (via Node.js helper) ──────────────────────────
+// ─── CDP Communication (native URLSessionWebSocketTask) ───────────────
+
+var cdpMessageId: Int = 1
 
 func cdpCommand(_ method: String, _ params: [String: Any]) -> [String: Any]? {
-    let payload = ["method": method, "params": params] as [String: Any]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload),
-          let json = String(data: data, encoding: .utf8) else { return nil }
+    guard let tab = cdpGetFirstTab(),
+          let wsUrlString = tab["webSocketDebuggerUrl"] as? String,
+          let wsUrl = URL(string: wsUrlString) else {
+        print("Error: Cannot connect to Chrome CDP. Is Chrome running with --remote-debugging-port=\(CDP_PORT)?")
+        print("  Run: wr chrome launch")
+        return nil
+    }
 
-    let script = """
-    const http = require('http');
-    const payload = \(json);
-    http.get('http://localhost:\(CDP_PORT)/json', (res) => {
-      let data = '';
-      res.on('data', (c) => data += c);
-      res.on('end', () => {
-        try {
-          const tabs = JSON.parse(data);
-          const tab = tabs.find(t => t.type === 'page') || tabs[0];
-          if (!tab) { console.error('No tab found'); process.exit(1); }
-          let WebSocket;
-          try { WebSocket = require('ws'); }
-          catch(e) {
-            console.error('ws module not found. Install with: cd e2e && npm install ws');
-            process.exit(1);
-          }
-          const ws = new WebSocket(tab.webSocketDebuggerUrl);
-          ws.on('open', () => {
-            ws.send(JSON.stringify({id:1, method:payload.method, params:payload.params}));
-          });
-          ws.on('message', (msg) => {
-            const r = JSON.parse(msg.toString());
-            if (r.id === 1) {
-              console.log(JSON.stringify(r.result || r));
-              ws.close();
-              process.exit(0);
+    let messageId = cdpMessageId
+    cdpMessageId += 1
+
+    let payload: [String: Any] = ["id": messageId, "method": method, "params": params]
+    guard let payloadData = try? JSONSerialization.data(withJSONObject: payload),
+          let payloadString = String(data: payloadData, encoding: .utf8) else {
+        return nil
+    }
+
+    let semaphore = DispatchSemaphore(value: 0)
+    var responseResult: [String: Any]?
+
+    let urlSession = URLSession(configuration: .default)
+    let webSocketTask = urlSession.webSocketTask(with: wsUrl)
+    webSocketTask.resume()
+
+    webSocketTask.send(.string(payloadString)) { error in
+        if let error = error {
+            print("CDP WebSocket send error: \(error.localizedDescription)")
+            semaphore.signal()
+            return
+        }
+
+        // Listen for response with timeout
+        let timeoutWorkItem = DispatchWorkItem {
+            semaphore.signal()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: timeoutWorkItem)
+
+        webSocketTask.receive { result in
+            timeoutWorkItem.cancel()
+            switch result {
+            case .success(.string(let text)):
+                if let data = text.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if json["id"] as? Int == messageId {
+                        responseResult = json["result"] as? [String: Any]
+                        if let error = json["error"] as? [String: Any] {
+                            print("CDP error: \(error["message"] ?? "unknown")")
+                        }
+                    } else {
+                        // Not our response, try again
+                        webSocketTask.receive { result2 in
+                            if case .success(.string(let text2)) = result2,
+                               let data2 = text2.data(using: .utf8),
+                               let json2 = try? JSONSerialization.jsonObject(with: data2) as? [String: Any],
+                               json2["id"] as? Int == messageId {
+                                responseResult = json2["result"] as? [String: Any]
+                            }
+                            semaphore.signal()
+                        }
+                        return
+                    }
+                }
+            case .success(.data):
+                break
+            case .failure(let error):
+                print("CDP WebSocket receive error: \(error.localizedDescription)")
             }
-          });
-          ws.on('error', (e) => { console.error('WS error: '+e.message); process.exit(1); });
-          setTimeout(() => { console.error('Timeout'); ws.close(); process.exit(1); }, 10000);
-        } catch(e) {
-          console.error('Parse error: '+e.message);
-          process.exit(1);
+            semaphore.signal()
         }
-      });
-    }).on('error', (e) => { console.error('HTTP error: '+e.message); process.exit(1); });
-    """
-
-    let tempDir = NSTemporaryDirectory()
-    let scriptPath = tempDir + "wr_cdp_\(Int.random(in: 0..<999999)).js"
-    try? script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
-    defer { try? FileManager.default.removeItem(atPath: scriptPath) }
-
-    let task = Process()
-    let nodePaths = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
-    var nodePath: String?
-    for path in nodePaths {
-        if FileManager.default.fileExists(atPath: path) { nodePath = path; break }
-    }
-    guard let np = nodePath else {
-        print("Error: Node.js not found. Install from https://nodejs.org/")
-        return nil
-    }
-    task.launchPath = np
-    task.arguments = [scriptPath]
-
-    let cwd = FileManager.default.currentDirectoryPath
-    var env = ProcessInfo.processInfo.environment
-    let nodePaths2 = [
-        cwd + "/e2e/node_modules",
-        (env["HOME"] ?? "") + "/.local/lib/node_modules",
-        "/usr/local/lib/node_modules",
-        "/opt/homebrew/lib/node_modules",
-    ]
-    env["NODE_PATH"] = nodePaths2.joined(separator: ":")
-    task.environment = env
-
-    let stdoutPipe = Pipe()
-    let stderrPipe = Pipe()
-    task.standardOutput = stdoutPipe
-    task.standardError = stderrPipe
-    try? task.run()
-    task.waitUntilExit()
-
-    let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-    let errorData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
-    if task.terminationStatus != 0 {
-        let error = String(data: errorData, encoding: .utf8) ?? ""
-        if !error.isEmpty {
-            print("CDP error: \(error.trimmingCharacters(in: .whitespacesAndNewlines))")
-        }
-        return nil
     }
 
-    guard let output = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !output.isEmpty,
-          let responseData = output.data(using: .utf8),
-          let result = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
-        return nil
-    }
-    return result
+    semaphore.wait()
+    webSocketTask.cancel(with: .goingAway, reason: nil)
+    urlSession.invalidateAndCancel()
+
+    return responseResult
 }
 
 // ─── Chrome Commands ──────────────────────────────────────────────────
@@ -181,7 +163,7 @@ func chromeLaunch() {
 
 func chromeTabs() {
     guard let tabs = cdpGetJSON("/json") else {
-        print("Error: Cannot connect to Chrome. Use 'wr chrome launch' first.")
+        print("Error: Cannot connect to Chrome. Run 'wr chrome launch' first.")
         exit(1)
     }
     print("Chrome tabs:")
@@ -203,12 +185,12 @@ func chromeNavigate(url: String) {
         exit(1)
     }
     print("Navigated to: \(url)")
-    
+
     let activateTask = Process()
     activateTask.launchPath = "/usr/bin/open"
     activateTask.arguments = ["-a", "Google Chrome"]
     try? activateTask.run()
-    
+
     usleep(500_000)
 }
 
@@ -221,14 +203,15 @@ func chromeScreenshot(out: String) {
             print("Screenshot saved: \(out)")
         }
     } else {
-        print("Error: screenshot failed")
+        print("Error: screenshot failed. Is Chrome running with CDP? Try: wr chrome launch")
         exit(1)
     }
 }
 
-func chromeClick(selector: String) {
+func chromeClick(selector: String, container: String? = nil) {
     _ = cdpCommand("Runtime.enable", [:])
-    let expr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)throw new Error('Not found: \(selector)');el.click();return 'clicked';})()"
+    let scope = container ?? "document"
+    let expr = "(()=>{const root=\(jsString(scope));const el=root.querySelector(\(jsString(selector)));if(!el)throw new Error('Not found: \(selector)');el.click();return 'clicked';})()"
     if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
        let value = result["result"] as? [String: Any],
        let resultValue = value["value"] as? String {
@@ -238,20 +221,34 @@ func chromeClick(selector: String) {
         print("Error: \(exception["text"] ?? "click failed")")
         exit(1)
     } else {
-        print("Error: click failed")
+        print("Error: click failed. Is Chrome running with CDP? Try: wr chrome launch")
         exit(1)
     }
 }
 
 func chromeType(selector: String, text: String) {
     _ = cdpCommand("Runtime.enable", [:])
-    let expr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)throw new Error('Not found: \(selector)');el.focus();el.value=\(jsString(text));el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return 'typed: '+el.value;})()"
+    // Use native setter to trigger React's controlled input handler
+    let expr = """
+    (()=>{
+        const el=document.querySelector(\(jsString(selector)));
+        if(!el)throw new Error('Not found: \(selector)');
+        el.focus();
+        const nativeSetter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set
+            ||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;
+        if(nativeSetter){nativeSetter.call(el,\(jsString(text)));}
+        else{el.value=\(jsString(text));}
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+        el.dispatchEvent(new Event('change',{bubbles:true}));
+        return 'typed: '+el.value;
+    })()
+    """
     if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
        let value = result["result"] as? [String: Any],
        let resultValue = value["value"] as? String {
         print(resultValue)
     } else {
-        print("Error: type failed")
+        print("Error: type failed. Is Chrome running with CDP? Try: wr chrome launch")
         exit(1)
     }
 }
@@ -292,7 +289,7 @@ func chromeEvaluate(expression: String) -> String {
             return "(no result)"
         }
     } else {
-        print("Error: evaluate failed")
+        print("Error: evaluate failed. Is Chrome running with CDP? Try: wr chrome launch")
         return "Error: evaluate failed"
     }
 }
@@ -328,7 +325,7 @@ func chromeSnapshot() {
             print(str)
         }
     } else {
-        print("Error: snapshot failed")
+        print("Error: snapshot failed. Is Chrome running with CDP? Try: wr chrome launch")
         exit(1)
     }
 }
@@ -360,7 +357,7 @@ func chromeNetwork() {
             print("  [\(type)] \(shortName) (\(duration)ms)")
         }
     } else {
-        print("Error: failed to get network requests")
+        print("Error: failed to get network requests. Is Chrome running with CDP? Try: wr chrome launch")
     }
 }
 
@@ -371,14 +368,21 @@ func chromeRecord(url: String, duration: Double, out: String) {
     chromeNavigate(url: url)
     usleep(1_000_000)
     print("Starting recording...")
-    sendCommand(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
-    print("Recording for \(Int(duration))s...")
-    Thread.sleep(forTimeInterval: duration + 2)
-    if FileManager.default.fileExists(atPath: out) {
-        let size = (try? FileManager.default.attributesOfItem(atPath: out)[.size] as? Int) ?? 0
-        print("Recording saved: \(out) (\(size) bytes)")
+    _ = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
+    print("Recording for \(Int(duration))s... (non-blocking — run 'wr status' to check)")
+    print("Recording will auto-stop after \(Int(duration))s. File: \(out)")
+
+    // Non-blocking: don't sleep for the full duration. Let the recorder's timer handle auto-stop.
+    // Just wait a short time for the recording to start, then return.
+    Thread.sleep(forTimeInterval: 2)
+
+    // Check if recording started
+    let status = sendCommandSync(["cmd": "status"])
+    if status.contains("true") || status.contains("1") {
+        print("Recording started successfully. Auto-stops in \(Int(duration))s.")
+        print("Run 'wr status' to monitor. Run 'wr stop' to stop early.")
     } else {
-        print("Warning: Recording file not found at \(out)")
+        print("Warning: Recording may not have started. Check with: wr status")
     }
 }
 

@@ -22,18 +22,22 @@ struct WRMain {
         case "start":
             var out = "/tmp/recording.mov"
             var duration = 0.0
+            var windowId: Int? = nil
             var i = 2
             while i < args.count {
                 switch args[i] {
                 case "--out": out = args[i + 1]; i += 2
                 case "--duration": duration = Double(args[i + 1]) ?? 0; i += 2
+                case "--window": windowId = Int(args[i + 1]); i += 2
                 case "--app": i += 2
                 default: i += 1
                 }
             }
             launchIfNeeded()
             ensureChromeWithCDP()
-            sendCommand(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
+            var payload: [String: Any] = ["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration]
+            if let wid = windowId { payload["windowId"] = wid }
+            sendCommand(payload)
         case "stop":
             sendCommand(["cmd": "stop"])
         case "status":
@@ -68,6 +72,7 @@ func printUsage() {
       wr start [--out <path>]          Start recording Chrome window
         --out <path>                   Output file (default: /tmp/recording.mov)
         --duration <seconds>           Auto-stop after N seconds (0 = manual)
+        --window <id>                  Record specific window ID (from wr list)
       wr stop                          Stop recording
       wr status                        Check recording status
       wr launch                        Launch the recorder daemon
@@ -79,7 +84,8 @@ func printUsage() {
       wr chrome navigate <url>         Navigate current tab to URL
       wr chrome screenshot [--out p]   Take a screenshot
       wr chrome click <selector>       Click an element
-      wr chrome type <selector> <text> Type text into an element
+        --container <selector>         Scope click within a container element
+      wr chrome type <selector> <text> Type text into an element (React-compatible)
       wr chrome press <key>            Press a key (Enter, Tab, Escape)
       wr chrome scroll <selector>      Scroll to an element
       wr chrome evaluate <expr>        Evaluate JavaScript expression
@@ -88,7 +94,7 @@ func printUsage() {
       wr chrome snapshot               Get page accessibility tree
       wr chrome console [--errors]     Get console messages
       wr chrome network                List network requests
-      wr chrome record <url> <dur>     Record Chrome while navigating
+      wr chrome record <url> <dur>     Record Chrome while navigating (non-blocking)
         --out <path>                   Output file (default: /tmp/recording.mov)
 
     E2E Testing:
@@ -105,7 +111,7 @@ func printUsage() {
         recording_status               Check recording state
         chrome_screenshot              Take screenshot (out)
         chrome_navigate                Navigate to URL (url)
-        chrome_click                   Click element (selector)
+        chrome_click                   Click element (selector, container)
         chrome_type                    Type text (selector, text)
         chrome_evaluate                Evaluate JS (expression)
         chrome_press                   Press key (key)
@@ -120,10 +126,12 @@ func printUsage() {
       wr launch
       wr list
       wr start --out ~/Desktop/demo.mov --duration 30
+      wr start --window 123 --out ~/Desktop/demo.mov
       wr stop
       wr chrome launch --url https://example.com
       wr chrome navigate https://google.com
       wr chrome type "textarea[name='q']" "hello world"
+      wr chrome click "button" --container ".dialog"
       wr chrome press Enter
       wr chrome screenshot --out ~/Desktop/screenshot.png
       wr chrome record https://example.com 10 --out ~/Desktop/rec.mov
@@ -186,7 +194,12 @@ func sendCommand(_ payload: [String: Any]) {
                 }
             } else {
                 for (key, value) in json {
-                    print("\(key): \(value)")
+                    if key == "recording" {
+                        let isRec = (value as? Int == 1) || (value as? Bool == true) || (value as? String == "1")
+                        print("recording: \(isRec ? "yes" : "no")")
+                    } else {
+                        print("\(key): \(value)")
+                    }
                 }
             }
         } else {
@@ -303,8 +316,13 @@ func runChrome() {
         }
         chromeScreenshot(out: out)
     case "click":
-        guard args.count >= 4 else { print("Usage: wr chrome click <selector>"); exit(1) }
-        chromeClick(selector: args[3])
+        guard args.count >= 4 else { print("Usage: wr chrome click <selector> [--container <selector>]"); exit(1) }
+        var container: String? = nil
+        var i = 4
+        while i < args.count {
+            if args[i] == "--container" { container = args[i + 1]; i += 2 } else { i += 1 }
+        }
+        chromeClick(selector: args[3], container: container)
     case "type":
         guard args.count >= 5 else { print("Usage: wr chrome type <selector> <text>"); exit(1) }
         chromeType(selector: args[3], text: args[4])
@@ -360,7 +378,8 @@ func printChromeUsage() {
       wr chrome navigate <url>             Navigate current tab to URL
       wr chrome screenshot [--out <path>]  Take a screenshot (default: /tmp/screenshot.png)
       wr chrome click <selector>           Click an element by CSS selector
-      wr chrome type <selector> <text>     Type text into an element
+        --container <selector>             Scope click within a container (e.g. ".dialog")
+      wr chrome type <selector> <text>     Type text into an element (React-compatible)
       wr chrome press <key>                Press a key (Enter, Tab, Escape, Space)
       wr chrome scroll <selector>          Scroll to an element
       wr chrome evaluate <expression>      Evaluate JavaScript and print result
@@ -369,13 +388,14 @@ func printChromeUsage() {
       wr chrome snapshot                   Get page accessibility tree
       wr chrome console [--errors]         Get console messages (optionally errors only)
       wr chrome network                    List network requests
-      wr chrome record <url> <duration>    Record Chrome window while navigating
+      wr chrome record <url> <duration>    Record Chrome window while navigating (non-blocking)
         --out <path>                       Output file (default: /tmp/recording.mov)
 
     Examples:
       wr chrome launch --url https://example.com
       wr chrome navigate https://google.com
       wr chrome type "textarea[name='q']" "hello world"
+      wr chrome click "button" --container ".modal-dialog"
       wr chrome press Enter
       wr chrome screenshot --out ~/Desktop/screenshot.png
       wr chrome click "#login-btn"

@@ -28,7 +28,7 @@ mkdir -p "$(dirname "$HASH_FILE")"
 CERT_NAME="WindowRecorder Dev"
 SIGN_IDENTITY="-"
 NEEDS_REBUILD=true
-CURRENT_HASH=$(cat "$SCRIPT_DIR/WindowRecorderApp.swift" "$SCRIPT_DIR/wr.swift" "$SCRIPT_DIR/VERSION" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+CURRENT_HASH=$(cat "$SCRIPT_DIR/WindowRecorderApp.swift" "$SCRIPT_DIR/wr.swift" "$SCRIPT_DIR/chrome.swift" "$SCRIPT_DIR/mcp.swift" "$SCRIPT_DIR/VERSION" 2>/dev/null | shasum -a 256 | awk '{print $1}')
 if [ -f "$HASH_FILE" ] && [ "$(cat "$HASH_FILE")" = "$CURRENT_HASH" ]; then
   if codesign --verify --verbose=1 "$APP_DIR" 2>/dev/null; then
     NEEDS_REBUILD=false

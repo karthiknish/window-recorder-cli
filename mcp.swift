@@ -62,11 +62,12 @@ func runMCPServer() {
         ],
         [
             "name": "chrome_click",
-            "description": "Click an element in Chrome by CSS selector.",
+            "description": "Click an element in Chrome by CSS selector. Optionally scope within a container.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
-                    "selector": ["type": "string", "description": "CSS selector for the element to click"]
+                    "selector": ["type": "string", "description": "CSS selector for the element to click"],
+                    "container": ["type": "string", "description": "CSS selector for a container to scope the click (e.g. '.dialog')"]
                 ] as [String: Any],
                 "required": ["selector"]
             ] as [String: Any]
@@ -179,7 +180,7 @@ func runMCPServer() {
                     ] as [String: Any],
                     "serverInfo": [
                         "name": "window-recorder",
-                        "version": "1.0.0"
+                        "version": "1.2.0"
                     ] as [String: Any]
                 ] as [String: Any]
             ]
@@ -241,13 +242,13 @@ func handleMCPTool(name: String, args: [String: Any]) -> String {
         let out = (args["out"] as? String) ?? "/tmp/recording.mov"
         launchIfNeeded()
         ensureChromeWithCDP()
-        let resp = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
-        Thread.sleep(forTimeInterval: duration + 2)
-        if FileManager.default.fileExists(atPath: out) {
-            let size = (try? FileManager.default.attributesOfItem(atPath: out)[.size] as? Int) ?? 0
-            return "Recording complete. File: \(out) (\(size) bytes, \(Int(duration))s)"
+        _ = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
+        Thread.sleep(forTimeInterval: 2)
+        let statusResp = sendCommandSync(["cmd": "status"])
+        if statusResp.contains("true") || statusResp.contains("1") {
+            return "Recording started. Auto-stops in \(Int(duration))s. File: \(out). Use recording_status to check, stop_recording to stop early."
         }
-        return "Recording finished but file not found at \(out). Response: \(resp)"
+        return "Recording may not have started. Status: \(statusResp)"
 
     case "record_chrome_navigate":
         guard let url = args["url"] as? String else { return "Error: url required" }
@@ -258,12 +259,12 @@ func handleMCPTool(name: String, args: [String: Any]) -> String {
         chromeNavigate(url: url)
         usleep(1_000_000)
         _ = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
-        Thread.sleep(forTimeInterval: duration + 2)
-        if FileManager.default.fileExists(atPath: out) {
-            let size = (try? FileManager.default.attributesOfItem(atPath: out)[.size] as? Int) ?? 0
-            return "Recording complete. Navigated to \(url). File: \(out) (\(size) bytes, \(Int(duration))s)"
+        Thread.sleep(forTimeInterval: 2)
+        let statusResp = sendCommandSync(["cmd": "status"])
+        if statusResp.contains("true") || statusResp.contains("1") {
+            return "Recording started after navigating to \(url). Auto-stops in \(Int(duration))s. File: \(out)."
         }
-        return "Recording finished but file not found at \(out)"
+        return "Recording may not have started after navigating to \(url). Status: \(statusResp)"
 
     case "stop_recording":
         _ = sendCommandSync(["cmd": "stop"])
@@ -285,8 +286,9 @@ func handleMCPTool(name: String, args: [String: Any]) -> String {
 
     case "chrome_click":
         guard let selector = args["selector"] as? String else { return "Error: selector required" }
-        chromeClick(selector: selector)
-        return "Clicked element: \(selector)"
+        let container = args["container"] as? String
+        chromeClick(selector: selector, container: container)
+        return "Clicked element: \(selector)\(container != nil ? " in \(container!)" : "")"
 
     case "chrome_type":
         guard let selector = args["selector"] as? String,

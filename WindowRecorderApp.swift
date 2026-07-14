@@ -29,8 +29,17 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var recording = false
     private var outputPath: String = ""
     private var stopTimer: DispatchSourceTimer?
+    private var recordingStartTime: Date?
+    private var recordingWindowTitle: String = ""
 
     var isRecording: Bool { recording }
+    var recordingElapsed: TimeInterval {
+        guard let start = recordingStartTime, recording else { return 0 }
+        return Date().timeIntervalSince(start)
+    }
+    var recordingFrameCount: Int64 { frameCount }
+    var recordingWindowName: String { recordingWindowTitle }
+    var recordingOutputPath: String { outputPath }
 
     func start(window: SCWindow, display: SCDisplay, out: String, duration: TimeInterval) throws {
         if recording { throw RecorderError.alreadyRecording }
@@ -57,6 +66,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         self.assetWriter = writer
         self.outputPath = out
+        self.recordingWindowTitle = window.title ?? "unknown"
+        self.recordingStartTime = Date()
 
         let bitRate = max(10_000_000, captureWidth * captureHeight * 4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
@@ -282,6 +293,7 @@ final class SocketServer {
             let app = json["app"] as? String ?? "Google Chrome"
             let out = json["out"] as? String ?? "/tmp/recording.mov"
             let duration = (json["duration"] as? Double) ?? 0
+            let windowId = json["windowId"] as? Int
 
             if recorder.isRecording {
                 send(fd, ["error": "already recording"])
@@ -292,22 +304,51 @@ final class SocketServer {
             Task {
                 do {
                     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                    guard let window = content.windows.first(where: {
-                        ($0.owningApplication?.applicationName ?? "").contains(app) ||
-                        ($0.title ?? "").contains(app)
-                    }) else {
-                        self.send(fd, ["error": "window not found: \(app)"])
-                        close(fd)
-                        return
+
+                    var window: SCWindow? = nil
+
+                    // If windowId specified, find by ID
+                    if let wid = windowId {
+                        window = content.windows.first(where: { $0.windowID == wid })
+                        if window == nil {
+                            self.send(fd, ["error": "window not found with ID: \(wid). Run 'wr list' to see available windows."])
+                            close(fd)
+                            return
+                        }
+                    } else {
+                        // Chrome-specific: prefer windows owned by "Google Chrome" or "Chrome"
+                        // Match by owningApplication name first, then by title
+                        let chromeWindows = content.windows.filter { w in
+                            let owner = w.owningApplication?.applicationName ?? ""
+                            return owner.contains("Chrome")
+                        }
+
+                        // Pick the most recently active Chrome window (last in the list)
+                        window = chromeWindows.last
+
+                        if window == nil {
+                            // Fallback: match by app name or title
+                            window = content.windows.first(where: {
+                                ($0.owningApplication?.applicationName ?? "").contains(app) ||
+                                ($0.title ?? "").contains(app)
+                            })
+                        }
+
+                        if window == nil {
+                            self.send(fd, ["error": "No Chrome window found. Open Chrome and try again, or use 'wr list' to see windows and '--window <id>' to target a specific one."])
+                            close(fd)
+                            return
+                        }
                     }
+
                     guard let display = content.displays.first else {
                         self.send(fd, ["error": "no display"])
                         close(fd)
                         return
                     }
 
-                    try self.recorder.start(window: window, display: display, out: out, duration: duration)
-                    self.send(fd, ["status": "recording", "window": window.title ?? "", "out": out])
+                    try self.recorder.start(window: window!, display: display, out: out, duration: duration)
+                    self.send(fd, ["status": "recording", "window": window!.title ?? "", "windowId": window!.windowID, "out": out])
                 } catch {
                     self.send(fd, ["error": error.localizedDescription])
                 }
@@ -320,9 +361,25 @@ final class SocketServer {
             close(fd)
 
         case "status":
-            send(fd, [
-                "recording": recorder.isRecording,
-            ])
+            if recorder.isRecording {
+                let elapsed = Int(recorder.recordingElapsed)
+                let mins = elapsed / 60
+                let secs = elapsed % 60
+                var fileSize: Int = 0
+                if !recorder.recordingOutputPath.isEmpty {
+                    fileSize = (try? FileManager.default.attributesOfItem(atPath: recorder.recordingOutputPath)[.size] as? Int) ?? 0
+                }
+                send(fd, [
+                    "recording": true,
+                    "window": recorder.recordingWindowName,
+                    "elapsed": String(format: "%dm %ds", mins, secs),
+                    "frames": recorder.recordingFrameCount,
+                    "file": recorder.recordingOutputPath,
+                    "fileSize": fileSize,
+                ])
+            } else {
+                send(fd, ["recording": false])
+            }
             close(fd)
 
         default:
@@ -469,7 +526,10 @@ final class MenuBarController: NSObject {
         if recorder.isRecording {
             statusItem.button?.image = makeCircleImage(color: .systemRed)
             statusMenuItem.title = "Status: Recording"
-            recordingInfoMenuItem.title = "Recording in progress..."
+            let elapsed = Int(recorder.recordingElapsed)
+            let mins = elapsed / 60
+            let secs = elapsed % 60
+            recordingInfoMenuItem.title = "\(recorder.recordingWindowName) — \(mins)m \(secs)s, \(recorder.recordingFrameCount) frames"
             recordingInfoMenuItem.isHidden = false
             stopMenuItem.isHidden = false
         } else {
