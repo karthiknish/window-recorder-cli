@@ -13,7 +13,12 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
 
       - name: Read version
         id: version
@@ -45,8 +50,8 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p artifacts
 
-          # Package the .app bundle
-          cd /tmp
+          # Package the .app bundle (build.sh installs to /Applications)
+          cd /Applications
           zip -r "$GITHUB_WORKSPACE/artifacts/WindowRecorder-v${VERSION}.app.zip" WindowRecorder.app
 
           # Package the CLI binary
@@ -58,35 +63,35 @@ jobs:
 
           # Create install script
           cat > artifacts/install.sh << 'INSTALL_EOF'
-          #!/bin/bash
-          set -e
-          echo "Installing WindowRecorder..."
-          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+#!/bin/bash
+set -e
+echo "Installing WindowRecorder..."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-          # Install the app
-          if [ -f "$SCRIPT_DIR/WindowRecorder-v"*.app.zip ]; then
-            unzip -o "$SCRIPT_DIR"/WindowRecorder-v*.app.zip -d /tmp/
-            cp -R /tmp/WindowRecorder.app /Applications/ 2>/dev/null || true
-            echo "App installed to /Applications/WindowRecorder.app"
-          fi
+# Install the app
+if [ -f "$SCRIPT_DIR/WindowRecorder-v"*.app.zip ]; then
+  unzip -o "$SCRIPT_DIR"/WindowRecorder-v*.app.zip -d /tmp/
+  cp -R /tmp/WindowRecorder.app /Applications/ 2>/dev/null || true
+  echo "App installed to /Applications/WindowRecorder.app"
+fi
 
-          # Install the CLI
-          if [ -f "$SCRIPT_DIR/wr-v"* ]; then
-            mkdir -p ~/.local/bin
-            cp "$SCRIPT_DIR"/wr-v* ~/.local/bin/wr
-            chmod +x ~/.local/bin/wr
-            echo "CLI installed to ~/.local/bin/wr"
-            echo "Add ~/.local/bin to your PATH if not already:"
-            echo '  export PATH="$HOME/.local/bin:$PATH"'
-          fi
+# Install the CLI
+if [ -f "$SCRIPT_DIR/wr-v"* ]; then
+  mkdir -p ~/.local/bin
+  cp "$SCRIPT_DIR"/wr-v* ~/.local/bin/wr
+  chmod +x ~/.local/bin/wr
+  echo "CLI installed to ~/.local/bin/wr"
+  echo "Add ~/.local/bin to your PATH if not already:"
+  echo '  export PATH="$HOME/.local/bin:$PATH"'
+fi
 
-          echo ""
-          echo "Done! Usage:"
-          echo "  wr launch        Start the recorder"
-          echo "  wr list          List windows"
-          echo "  wr start --app 'Google Chrome' --out rec.mov --duration 30"
-          echo "  wr e2e e2e/specs/example.json   Run E2E tests with recording"
-          INSTALL_EOF
+echo ""
+echo "Done! Usage:"
+echo "  wr launch        Start the recorder"
+echo "  wr list          List windows"
+echo "  wr start --app 'Google Chrome' --out rec.mov --duration 30"
+echo "  wr e2e e2e/specs/example.json   Run E2E tests with recording"
+INSTALL_EOF
           chmod +x artifacts/install.sh
 
       - name: Extract changelog for release notes
@@ -138,7 +143,7 @@ jobs:
 
             - macOS 14+ (ScreenCaptureKit)
             - Screen Recording permission: System Settings > Privacy & Security > Screen Recording
-            - Node.js 18+ (for E2E test runner only)
+            - Node.js 22+ (for E2E test runner only)
 
             ## Quick Start
 
