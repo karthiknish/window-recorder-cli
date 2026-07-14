@@ -20,6 +20,11 @@ mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 mkdir -p "$BIN_DIR"
 
+# Copy app icon if available
+if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
+  cp "$SCRIPT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+fi
+
 # Build the app binary
 swiftc \
   -framework ScreenCaptureKit \
@@ -57,6 +62,8 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <string>NSApplication</string>
     <key>LSUIElement</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
 </dict>
 </plist>
 EOF
