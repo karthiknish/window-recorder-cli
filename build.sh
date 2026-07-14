@@ -80,8 +80,9 @@ CNF
   return 1
 }
 
-if ensure_signing_cert; then
-  SIGN_IDENTITY="$CERT_NAME"
+if [ -n "$CI" ] || ! ensure_signing_cert; then
+  SIGN_IDENTITY="-"
+  echo "Using ad-hoc signing."
 fi
 
 if [ "$NEEDS_REBUILD" = true ]; then
