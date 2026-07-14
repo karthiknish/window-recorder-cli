@@ -717,7 +717,9 @@ final class MenuBarController: NSObject {
                 installTask.arguments = [scriptPath.path]
                 try installTask.run()
 
-                NSApp.terminate(nil)
+                DispatchQueue.main.async {
+                    NSApp.terminate(nil)
+                }
             } catch {
                 DispatchQueue.main.async { [weak self] in
                     self?.updateMenuItem.isEnabled = true
