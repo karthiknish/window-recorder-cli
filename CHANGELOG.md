@@ -5,6 +5,12 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-15
+
+### Fixed
+- Cleaned up stale tags (v1.0.3-v1.0.6) from failed CI runs
+- Tags and releases now stay in sync
+
 ## [1.1.0] - 2026-07-15
 
 ### Added
