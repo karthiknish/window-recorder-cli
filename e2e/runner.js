@@ -174,22 +174,25 @@ class CDPClient {
   }
 
   async click(selector) {
+    const s = JSON.stringify(selector);
     await this.evaluate(`
       (function() {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) throw new Error('Element not found: ${selector}');
+        const el = document.querySelector(${s});
+        if (!el) throw new Error('Element not found: ' + ${s});
         el.click();
       })()
     `);
   }
 
   async type(selector, text) {
+    const s = JSON.stringify(selector);
+    const t = JSON.stringify(text);
     await this.evaluate(`
       (function() {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) throw new Error('Element not found: ${selector}');
+        const el = document.querySelector(${s});
+        if (!el) throw new Error('Element not found: ' + ${s});
         el.focus();
-        el.value = ${JSON.stringify(text)};
+        el.value = ${t};
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       })()
@@ -197,11 +200,13 @@ class CDPClient {
   }
 
   async selectOption(selector, value) {
+    const s = JSON.stringify(selector);
+    const v = JSON.stringify(value);
     await this.evaluate(`
       (function() {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) throw new Error('Element not found: ${selector}');
-        el.value = ${JSON.stringify(value)};
+        const el = document.querySelector(${s});
+        if (!el) throw new Error('Element not found: ' + ${s});
+        el.value = ${v};
         el.dispatchEvent(new Event('change', { bubbles: true }));
       })()
     `);
@@ -225,11 +230,25 @@ class CDPClient {
   }
 
   async scrollTo(selector) {
+    const s = JSON.stringify(selector);
     await this.evaluate(`
       (function() {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) throw new Error('Element not found: ${selector}');
+        const el = document.querySelector(${s});
+        if (!el) throw new Error('Element not found: ' + ${s});
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      })()
+    `);
+  }
+
+  async submit(selector) {
+    const s = JSON.stringify(selector);
+    await this.evaluate(`
+      (function() {
+        const el = document.querySelector(${s});
+        if (!el) throw new Error('Element not found: ' + ${s});
+        if (el.form) { el.form.submit(); }
+        else if (el.tagName === 'FORM') { el.submit(); }
+        else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
       })()
     `);
   }

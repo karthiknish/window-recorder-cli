@@ -3,7 +3,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="/tmp/WindowRecorder.app"
+APP_DIR="/Applications/WindowRecorder.app"
 BIN_DIR="${HOME}/.local/bin"
 
 # Read version from VERSION file
@@ -33,6 +33,9 @@ swiftc \
   -o "$APP_DIR/Contents/MacOS/WindowRecorder" 2>&1 | grep -v warning || true
 
 chmod +x "$APP_DIR/Contents/MacOS/WindowRecorder"
+
+# Code sign with bundle identifier (required for TCC permissions on macOS 14+)
+codesign --force --sign - --identifier "com.falnor.window-recorder" "$APP_DIR" 2>&1 || true
 
 # Write Info.plist with version
 cat > "$APP_DIR/Contents/Info.plist" << EOF

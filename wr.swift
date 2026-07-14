@@ -12,7 +12,7 @@ import Foundation
 //   wr kill                           — kill the recorder app
 
 let SOCKET_PATH = "/tmp/window-recorder.sock"
-let APP_PATH = "/tmp/WindowRecorder.app"
+let APP_PATH = "/Applications/WindowRecorder.app"
 
 let args = CommandLine.arguments
 guard args.count >= 2 else {

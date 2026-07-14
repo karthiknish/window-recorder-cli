@@ -7,9 +7,12 @@
     { "action": "wait", "ms": 1500 },
     { "action": "screenshot", "path": "screenshots/google_01_home.png" },
     { "action": "type", "selector": "textarea[name='q']", "text": "Chrome DevTools Protocol" },
+    { "action": "wait", "ms": 500 },
+    { "action": "screenshot", "path": "screenshots/google_02_typed.png" },
     { "action": "press", "key": "Enter" },
-    { "action": "wait", "ms": 2000 },
-    { "action": "screenshot", "path": "screenshots/google_02_results.png" },
-    { "action": "assert", "selector": "#search", "expected": "Chrome" }
+    { "action": "wait", "ms": 3000 },
+    { "action": "screenshot", "path": "screenshots/google_03_results.png" },
+    { "action": "assert", "selector": "h3", "expected": "Chrome" },
+    { "action": "evaluate", "expression": "document.querySelectorAll('h3').length", "expected": "10" }
   ]
 }

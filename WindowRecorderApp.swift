@@ -3,6 +3,9 @@ import ScreenCaptureKit
 import AVFoundation
 import CoreVideo
 import AppKit
+import os.log
+
+let log = OSLog(subsystem: "com.falnor.window-recorder", category: "recorder")
 
 // ─── Protocol ─────────────────────────────────────────────────────────
 // The app listens on a Unix domain socket at /tmp/window-recorder.sock
@@ -19,12 +22,10 @@ let SOCKET_PATH = "/tmp/window-recorder.sock"
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var assetWriter: AVAssetWriter?
     private var assetWriterInput: AVAssetWriterInput?
-    private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var stream: SCStream?
-    private var startTime: CFTimeInterval = 0
     private var frameCount: Int64 = 0
     private let queue = DispatchQueue(label: "com.windowrecorder.capture")
-    private var isWriting = false
+    private var sessionStarted = false
     private var recording = false
     private var outputPath: String = ""
     private var stopTimer: DispatchSourceTimer?
@@ -34,14 +35,19 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     func start(window: SCWindow, display: SCDisplay, out: String, duration: TimeInterval) throws {
         if recording { throw RecorderError.alreadyRecording }
 
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let captureWidth = Int(filter.contentRect.width) * Int(filter.pointPixelScale)
+        let captureHeight = Int(filter.contentRect.height) * Int(filter.pointPixelScale)
+
+        os_log("Starting recording: window=%{public}s, size=%dx%d, out=%{public}s", log: log, type: .info, window.title ?? "?", captureWidth, captureHeight, out)
+
         let config = SCStreamConfiguration()
-        config.width = display.width
-        config.height = display.height
+        config.width = captureWidth
+        config.height = captureHeight
         config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.queueDepth = 5
         config.showsCursor = true
-
-        let filter = SCContentFilter(desktopIndependentWindow: window)
+        config.capturesAudio = false
 
         let url = URL(fileURLWithPath: out)
         try? FileManager.default.removeItem(at: url)
@@ -54,25 +60,20 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: display.width,
-            AVVideoHeightKey: display.height,
+            AVVideoWidthKey: captureWidth,
+            AVVideoHeightKey: captureHeight,
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: 8_000_000,
                 AVVideoMaxKeyFrameIntervalKey: 60,
             ],
         ])
         input.expectsMediaDataInRealTime = true
-        writer.add(input)
+        if writer.canAdd(input) { writer.add(input) }
         self.assetWriterInput = input
 
-        self.adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
-                kCVPixelBufferWidthKey as String: display.width,
-                kCVPixelBufferHeightKey as String: display.height,
-            ]
-        )
+        // Start writing BEFORE capture starts
+        writer.startWriting()
+        sessionStarted = false
 
         let scStream = SCStream(filter: filter, configuration: config, delegate: self)
         try scStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
@@ -82,17 +83,20 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             do {
                 try await scStream.startCapture()
                 self.recording = true
+                os_log("Capture started for window: %{public}s", log: log, type: .info, window.title ?? "?")
 
                 if duration > 0 {
                     let timer = DispatchSource.makeTimerSource(queue: queue)
                     timer.schedule(deadline: .now() + duration)
                     timer.setEventHandler { [weak self] in
+                        os_log("Duration timer fired, stopping", log: log, type: .info)
                         self?.stop()
                     }
                     timer.resume()
                     self.stopTimer = timer
                 }
             } catch {
+                os_log("Capture failed: %{public}s", log: log, type: .error, error.localizedDescription)
                 NotificationCenter.default.post(
                     name: .recorderError, object: nil,
                     userInfo: ["error": error.localizedDescription]
@@ -106,34 +110,33 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         recording = false
         stopTimer?.cancel()
         stopTimer = nil
+        os_log("Stopping recording, frames captured: %d", log: log, type: .info, frameCount)
 
         Task {
             if let stream = self.stream {
                 try? await stream.stopCapture()
             }
 
-            // Give the capture pipeline a moment to flush any pending frames
-            try? await Task.sleep(nanoseconds: 200_000_000) // 0.2s
+            try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
 
-            // Only finish writing if we actually received frames
-            if self.isWriting && self.frameCount > 0, let writer = self.assetWriter, let input = self.assetWriterInput {
+            if self.frameCount > 0, let writer = self.assetWriter, let input = self.assetWriterInput {
                 input.markAsFinished()
-                writer.finishWriting { [weak self] in
-                    guard let self = self else { return }
-                    let status: String
-                    if self.assetWriter?.status == .completed {
-                        status = "completed"
-                    } else {
-                        status = "failed"
-                    }
-                    NotificationCenter.default.post(
-                        name: .recorderStopped, object: nil,
-                        userInfo: ["status": status, "path": self.outputPath, "frames": self.frameCount]
-                    )
+                await writer.finishWriting()
+                let status: String
+                if writer.status == .completed {
+                    status = "completed"
+                } else {
+                    status = "failed"
+                    os_log("Writer finished with status: %d, error: %{public}s", log: log, type: .error, writer.status.rawValue, writer.error?.localizedDescription ?? "none")
                 }
+                os_log("Recording finished: %{public}s, frames: %d", log: log, type: .info, status, self.frameCount)
+                NotificationCenter.default.post(
+                    name: .recorderStopped, object: nil,
+                    userInfo: ["status": status, "path": self.outputPath, "frames": self.frameCount]
+                )
             } else {
-                // No frames were captured — remove the empty file
                 try? FileManager.default.removeItem(atPath: self.outputPath)
+                os_log("No frames captured, removed empty file", log: log, type: .info)
                 NotificationCenter.default.post(
                     name: .recorderStopped, object: nil,
                     userInfo: ["status": "completed", "path": self.outputPath, "frames": 0]
@@ -142,28 +145,37 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    func stream(_ stream: SCStream, didOutput sampleBuffer: CMSampleBuffer) {
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+        os_log("didOutput called, type=%d, recording=%d", log: log, type: .info, outputType.rawValue, recording ? 1 : 0)
         guard recording else { return }
+        guard outputType == .screen else { return }
         guard let writer = assetWriter, let input = assetWriterInput else { return }
 
-        if writer.status == .unknown {
-            writer.startWriting()
+        // Check frame status — only process complete frames
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[String: Any]],
+              let attachment = attachments.first else { return }
+        let statusRawValue = attachment[SCStreamFrameInfo.status.rawValue] as? Int ?? 0
+        guard let status = SCFrameStatus(rawValue: statusRawValue), status == .complete else { return }
+
+        // Start session at the first complete frame's PTS
+        if !sessionStarted {
             writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-            startTime = CFAbsoluteTimeGetCurrent()
-            isWriting = true
+            sessionStarted = true
+            os_log("First complete frame received, starting session", log: log, type: .info)
         }
 
-        guard isWriting, input.isReadyForMoreMediaData else { return }
+        guard input.isReadyForMoreMediaData else { return }
 
-        if let buffer = adaptor {
-            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-            let time = CMTime(seconds: CFAbsoluteTimeGetCurrent() - startTime, preferredTimescale: 600)
-            buffer.append(pixelBuffer, withPresentationTime: time)
-            frameCount += 1
+        // Append the CMSampleBuffer directly — no PixelBufferAdaptor needed
+        input.append(sampleBuffer)
+        frameCount += 1
+        if frameCount == 1 || frameCount % 30 == 0 {
+            os_log("Frame %d appended", log: log, type: .info, frameCount)
         }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        os_log("Stream stopped with error: %{public}s", log: log, type: .error, error.localizedDescription)
         NotificationCenter.default.post(
             name: .recorderError, object: nil,
             userInfo: ["error": error.localizedDescription]
@@ -334,8 +346,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // no dock icon
+
+        // Request screen capture permission
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+        }
+
         server.start()
-        NSLog("[WindowRecorder] Ready")
+        os_log("WindowRecorder Ready", log: log, type: .info)
     }
 }
 
