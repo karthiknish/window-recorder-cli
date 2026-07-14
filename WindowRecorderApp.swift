@@ -408,7 +408,50 @@ final class MenuBarController: NSObject {
 
         statusItem.menu = menu
 
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(recordingFinished(_:)),
+            name: .recorderStopped, object: nil
+        )
+
         startStatusTimer()
+    }
+
+    @objc func recordingFinished(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let status = info["status"] as? String,
+              let path = info["path"] as? String else { return }
+        let frames = info["frames"] as? Int64 ?? 0
+
+        DispatchQueue.main.async { [weak self] in
+            self?.showRecordingResult(status: status, path: path, frames: frames)
+        }
+    }
+
+    private func showRecordingResult(status: String, path: String, frames: Int64) {
+        NSApp.activate(ignoringOtherApps: true)
+        
+        if status == "completed" && frames > 0 {
+            let alert = NSAlert()
+            alert.messageText = "Recording Complete"
+            alert.informativeText = "Saved \(frames) frames to:\n\(path)"
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Open Video")
+            alert.addButton(withTitle: "Show in Finder")
+            alert.addButton(withTitle: "Dismiss")
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            } else if response == .alertSecondButtonReturn {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            }
+        } else if status == "failed" {
+            let alert = NSAlert()
+            alert.messageText = "Recording Failed"
+            alert.informativeText = "The recording could not be saved.\nOutput: \(path)"
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+        NSApp.deactivate()
     }
 
     private func startStatusTimer() {
