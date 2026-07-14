@@ -1,4 +1,4 @@
-name: Auto Tag
+name: Auto Tag & Release
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   auto-tag:
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -41,3 +41,143 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "v${{ steps.version.outputs.version }}"
           git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Build WindowRecorder.app + CLI
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Verify CLI
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          ~/.local/bin/wr --help
+
+      - name: Install e2e dependencies
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cd e2e
+          npm install
+
+      - name: Verify e2e runner
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cd e2e
+          node runner.js --help
+
+      - name: Package artifacts
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p artifacts
+
+          cd /Applications
+          zip -r "$GITHUB_WORKSPACE/artifacts/WindowRecorder-v${VERSION}.app.zip" WindowRecorder.app
+
+          cp ~/.local/bin/wr "$GITHUB_WORKSPACE/artifacts/wr-v${VERSION}"
+
+          cd "$GITHUB_WORKSPACE"
+          tar czf "artifacts/e2e-tools-v${VERSION}.tar.gz" --exclude='e2e/node_modules' --exclude='e2e/screenshots' --exclude='e2e/recordings' --exclude='e2e/results.json' e2e/
+
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'set -e' \
+            'echo "Installing WindowRecorder..."' \
+            'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"' \
+            '' \
+            'if [ -f "$SCRIPT_DIR/WindowRecorder-v"*.app.zip ]; then' \
+            '  unzip -o "$SCRIPT_DIR"/WindowRecorder-v*.app.zip -d /tmp/' \
+            '  cp -R /tmp/WindowRecorder.app /Applications/ 2>/dev/null || true' \
+            '  echo "App installed to /Applications/WindowRecorder.app"' \
+            'fi' \
+            '' \
+            'if [ -f "$SCRIPT_DIR/wr-v"* ]; then' \
+            '  mkdir -p ~/.local/bin' \
+            '  cp "$SCRIPT_DIR"/wr-v* ~/.local/bin/wr' \
+            '  chmod +x ~/.local/bin/wr' \
+            '  echo "CLI installed to ~/.local/bin/wr"' \
+            '  echo "Add ~/.local/bin to your PATH if not already:"' \
+            "  echo '  export PATH=\"\$HOME/.local/bin:\$PATH\"'" \
+            'fi' \
+            '' \
+            'echo ""' \
+            'echo "Done! Usage:"' \
+            'echo "  wr launch        Start the recorder"' \
+            'echo "  wr list          List windows"' \
+            "echo \"  wr start --app 'Google Chrome' --out rec.mov --duration 30\"" \
+            'echo "  wr e2e e2e/specs/example.json   Run E2E tests with recording"' \
+            > artifacts/install.sh
+          chmod +x artifacts/install.sh
+
+      - name: Extract changelog for release notes
+        if: steps.check.outputs.exists == 'false'
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTES=$(awk "/## \[${VERSION}\]/{flag=1; next} /## \[/{flag=0} flag" CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            NOTES="Release v${VERSION}"
+          fi
+          echo "$NOTES" > /tmp/release_notes.md
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/release_notes.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: WindowRecorder v${{ steps.version.outputs.version }}
+          body: |
+            # WindowRecorder v${{ steps.version.outputs.version }}
+
+            ## Release Notes
+
+            ${{ steps.changelog.outputs.notes }}
+
+            ## Downloads
+
+            | File | Description |
+            |------|-------------|
+            | `WindowRecorder-v${{ steps.version.outputs.version }}.app.zip` | macOS app bundle (ScreenCaptureKit recorder daemon) |
+            | `wr-v${{ steps.version.outputs.version }}` | CLI binary (`wr` command) |
+            | `e2e-tools-v${{ steps.version.outputs.version }}.tar.gz` | E2E test runner + specs (requires Node.js) |
+            | `install.sh` | Automated install script |
+
+            ## Install
+
+            1. Download all artifacts
+            2. Run: `bash install.sh`
+            3. Or manual install:
+               - Unzip `WindowRecorder-*.app.zip` to `/Applications/`
+               - Copy `wr-v*` to `~/.local/bin/wr`
+               - Add `~/.local/bin` to your `PATH`
+
+            ## Requirements
+
+            - macOS 14+ (ScreenCaptureKit)
+            - Screen Recording permission: System Settings > Privacy & Security > Screen Recording
+            - Node.js 22+ (for E2E test runner only)
+
+            ## Quick Start
+
+            ```bash
+            wr launch
+            wr list
+            wr start --app "Google Chrome" --out ~/Desktop/demo.mov --duration 30
+            wr stop
+            ```
+
+            ## E2E Testing
+
+            ```bash
+            tar xzf e2e-tools-v${{ steps.version.outputs.version }}.tar.gz
+            cd e2e && npm install
+            wr e2e specs/example.json --record
+            ```
+          files: |
+            artifacts/WindowRecorder-v${{ steps.version.outputs.version }}.app.zip
+            artifacts/wr-v${{ steps.version.outputs.version }}
+            artifacts/e2e-tools-v${{ steps.version.outputs.version }}.tar.gz
+            artifacts/install.sh
