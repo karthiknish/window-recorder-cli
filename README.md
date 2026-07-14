@@ -2,18 +2,19 @@
 
 A macOS window recording tool built with Swift, ScreenCaptureKit, and AVFoundation.
 
-Records specific windows by name and outputs `.mov` files. Controlled via a Unix domain socket CLI (`wr`). Includes E2E test runner with Chrome DevTools Protocol integration for recorded browser testing.
+Records specific windows by name and outputs `.mov` files. Controlled via a Unix domain socket CLI (`wr`). Includes Chrome DevTools Protocol integration for browser automation and an MCP server for AI agents.
 
-[![CI](https://github.com/karthiknish/window-recorder-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/karthiknish/window-recorder-cli/actions/workflows/ci.yml)
-[![Release](https://github.com/karthiknish/window-recorder-cli/actions/workflows/release.yml/badge.svg)](https://github.com/karthiknish/window-recorder-cli/releases)
+[![Release](https://github.com/karthiknish/window-recorder-cli/actions/workflows/auto-tag.yml/badge.svg)](https://github.com/karthiknish/window-recorder-cli/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Components
 
-- **WindowRecorderApp.swift** — Swift app with ScreenCaptureKit + AVFoundation + Unix socket server
+- **WindowRecorderApp.swift** — Swift app with ScreenCaptureKit + AVFoundation + Unix socket server + menu bar UI
 - **wr.swift** — CLI tool that sends JSON commands to the app via Unix domain socket
+- **chrome.swift** — Chrome DevTools Protocol integration (native Swift WebSocket, no Node.js needed)
+- **mcp.swift** — MCP server (JSON-RPC over stdio) exposing Chrome recording tools to AI agents
 - **build.sh** — Builds both binaries, installs to `/Applications/WindowRecorder.app` and `~/.local/bin/wr`
 - **e2e/** — E2E test runner with Chrome DevTools Protocol + WindowRecorder integration
-- **.github/workflows/** — CI (build/test) and Release (package/publish) workflows
 
 ## Download & Install
 
@@ -46,22 +47,67 @@ cd window-recorder-cli
 ```bash
 wr launch                          # Launch the recorder app
 wr list                            # List available windows
-wr start --app "AppName" --out /path/to/output.mov --duration 60
+wr start --app "Google Chrome" --out /path/to/output.mov --duration 60
+wr start --window <id> --out /path/to/output.mov  # Record specific window by ID
 wr stop                            # Stop current recording
-wr status                          # Check recording status
+wr status                          # Check recording status (window, elapsed, frames, file size)
 wr kill                            # Kill the recorder app
 ```
+
+## Chrome DevTools Protocol
+
+```bash
+wr chrome launch [--url <url>]       # Launch Chrome with remote debugging
+wr chrome tabs                       # List open Chrome tabs
+wr chrome navigate <url>             # Navigate current tab to URL
+wr chrome screenshot [--out <path>]  # Take a screenshot
+wr chrome click <selector>           # Click an element (trusted CDP pointer events)
+  --container <selector>             # Scope click within a container
+  --text "label"                     # Click element by text label (fuzzy match)
+wr chrome type <selector> <text>     # Type text (React-compatible, char-by-char)
+wr chrome press <key>                # Press a key (Enter, Tab, Escape, Space)
+wr chrome scroll <selector>          # Scroll to an element
+wr chrome evaluate <expr>            # Evaluate JavaScript expression
+wr chrome assert <sel> <text>        # Assert element contains text
+wr chrome wait <ms>                  # Wait for N milliseconds
+wr chrome wait-for-text <sel> <text> [timeout_ms]  # Wait until element contains text
+wr chrome snapshot                   # Get page accessibility tree
+wr chrome console [--errors]         # Get console messages
+wr chrome network                    # List network requests
+wr chrome record <url> <dur>         # Record Chrome while navigating (non-blocking)
+```
+
+## MCP Server
+
+Run `wr mcp` to start an MCP server (JSON-RPC over stdio) that exposes Chrome recording tools to AI agents.
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `record_chrome` | Record Chrome window (duration, out) |
+| `record_chrome_navigate` | Navigate + record (url, duration, out) |
+| `stop_recording` | Stop current recording |
+| `recording_status` | Check recording state |
+| `chrome_screenshot` | Take screenshot (out) |
+| `chrome_navigate` | Navigate to URL (url) |
+| `chrome_click` | Click element (selector, container, text) |
+| `chrome_type` | Type text (selector, text) |
+| `chrome_evaluate` | Evaluate JS (expression) |
+| `chrome_press` | Press key (key) |
+| `chrome_scroll` | Scroll to element (selector) |
+| `chrome_assert` | Assert text content (selector, expected) |
+| `chrome_wait` | Wait milliseconds (ms) |
+| `chrome_wait_for_text` | Wait until element contains text (selector, text, timeoutMs) |
+| `chrome_snapshot` | Get accessibility tree |
+| `chrome_tabs` | List Chrome tabs |
+| `chrome_network` | List network requests |
 
 ## Requirements
 
 - macOS 14+ (ScreenCaptureKit)
+- Google Chrome (for CDP integration)
 - Screen Recording permission in System Settings > Privacy & Security
-
-## Build
-
-```bash
-./build.sh
-```
 
 ## E2E Testing with Recording
 
@@ -80,12 +126,6 @@ wr e2e e2e/specs/example.json
 
 # Run without recording
 wr e2e e2e/specs/example.json --no-record
-
-# Run directly via the shell script
-./e2e/e2e-record.sh e2e/specs/example.json
-
-# Run directly via Node.js
-cd e2e && node runner.js --spec specs/example.json --record
 ```
 
 ### Test Spec Format
@@ -108,69 +148,32 @@ Create JSON spec files in `e2e/specs/`:
 }
 ```
 
-### Available Actions
-
-| Action      | Fields                              | Description                     |
-|-------------|-------------------------------------|---------------------------------|
-| `navigate`  | `url`                               | Navigate to a URL               |
-| `click`     | `selector`                          | Click an element                |
-| `type`      | `selector`, `text`                  | Type text into an input         |
-| `select`    | `selector`, `value`                 | Select an option                |
-| `press`     | `key`                               | Press a key (Enter, Tab, etc.)  |
-| `scroll`    | `selector`                          | Scroll to an element            |
-| `assert`    | `selector`, `expected`              | Assert element text contains    |
-| `wait`      | `ms`                                | Wait for N milliseconds         |
-| `screenshot`| `path` (optional)                   | Take a screenshot               |
-| `evaluate`  | `expression`, `expected` (optional) | Evaluate JS and optionally assert |
-
-### How It Works
-
-1. **Chrome** is launched with `--remote-debugging-port=9222`
-2. **WindowRecorder** is launched and starts recording the Chrome window
-3. **Node.js runner** connects to Chrome via CDP WebSocket and executes test steps
-4. **Recording stops** after tests complete, producing a `.mov` file
-5. **Results** are written to `e2e/results.json` with pass/fail per step
-
-### Using with Chrome MCP
-
-The Chrome DevTools MCP tools can be used alongside the E2E runner for interactive testing:
-
-1. Use Chrome MCP tools (`chrome-devtools_navigate_page`, `chrome-devtools_click`, etc.) to interact with the page
-2. Use `wr start` / `wr stop` to control recording around specific interactions
-3. Use the E2E runner for automated, repeatable test scenarios
-
-### Recordings
-
-Recordings are saved to `recordings/` with the test name and timestamp. Screenshots are saved to `e2e/screenshots/`.
-
 ## CI/CD
 
-### Continuous Integration
+### Auto Tag & Release
 
-Every push to `main` and every PR triggers [CI](.github/workflows/ci.yml):
+Every push to `main` that changes the `VERSION` file triggers the [Auto Tag & Release workflow](.github/workflows/auto-tag.yml):
+- Creates a git tag `v<version>`
 - Builds WindowRecorder.app + `wr` CLI on macOS 14
-- Verifies CLI and E2E runner
-- Uploads build artifacts (retained 30 days)
-
-### Releases
-
-Push a tag `v*` to trigger the [Release workflow](.github/workflows/release.yml):
-- Builds and packages all artifacts
-- Creates a GitHub Release with download links and install instructions
-- Extracts release notes from [CHANGELOG.md](CHANGELOG.md)
+- Packages artifacts (app zip, CLI binary, e2e tools, install script)
+- Creates a GitHub Release with download links and changelog
+- Guards against incomplete releases (rebuilds if tag exists but release is missing)
 
 ```bash
 # Bump version
-echo "1.1.0" > VERSION
+echo "1.4.0" > VERSION
 
 # Update CHANGELOG.md with new section
-# Then commit and tag:
+# Then commit and push:
 git add VERSION CHANGELOG.md
-git commit -m "release: v1.1.0"
-git tag v1.1.0
-git push origin main --tags
+git commit -m "chore: bump to v1.4.0"
+git push
 ```
 
 ### Versioning
 
 Version is tracked in [VERSION](VERSION) using [Semantic Versioning](https://semver.org/). Release notes are maintained in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+[MIT](LICENSE)
