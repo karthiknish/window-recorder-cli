@@ -1,0 +1,15 @@
+{
+  "name": "Google Search Test",
+  "url": "https://www.google.com",
+  "app": "Google Chrome",
+  "steps": [
+    { "action": "navigate", "url": "https://www.google.com" },
+    { "action": "wait", "ms": 1500 },
+    { "action": "screenshot", "path": "screenshots/google_01_home.png" },
+    { "action": "type", "selector": "textarea[name='q']", "text": "Chrome DevTools Protocol" },
+    { "action": "press", "key": "Enter" },
+    { "action": "wait", "ms": 2000 },
+    { "action": "screenshot", "path": "screenshots/google_02_results.png" },
+    { "action": "assert", "selector": "#search", "expected": "Chrome" }
+  ]
+}

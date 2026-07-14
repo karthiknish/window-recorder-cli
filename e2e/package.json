@@ -1,0 +1,15 @@
+{
+  "name": "window-recorder-e2e",
+  "version": "1.0.0",
+  "description": "E2E test runner with Chrome DevTools Protocol + WindowRecorder integration",
+  "type": "module",
+  "scripts": {
+    "test": "node runner.js",
+    "test:spec": "node runner.js --spec",
+    "record": "node runner.js --record",
+    "record:spec": "node runner.js --spec --record"
+  },
+  "dependencies": {
+    "ws": "^8.21.1"
+  }
+}

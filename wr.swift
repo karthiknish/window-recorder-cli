@@ -47,6 +47,8 @@ case "launch":
     launchApp()
 case "kill":
     killApp()
+case "e2e":
+    runE2E()
 case "--help", "-h", "help":
     printUsage()
 default:
@@ -68,12 +70,15 @@ func printUsage() {
       wr status                        Check recording status
       wr launch                        Launch the recorder daemon
       wr kill                          Kill the recorder daemon
+    wr e2e [spec] [--no-record]      Run E2E test with recording
 
     Examples:
       wr launch
       wr list
       wr start --app "Google Chrome" --out ~/Desktop/demo.mov --duration 30
       wr stop
+      wr e2e e2e/specs/example.json
+      wr e2e e2e/specs/google.json --no-record
     """)
 }
 
@@ -190,4 +195,35 @@ func killApp() {
     task.waitUntilExit()
     unlink(SOCKET_PATH)
     print("Recorder killed")
+}
+
+func runE2E() {
+    let scriptDir = FileManager.default.currentDirectoryPath
+    let scriptPath = scriptDir + "/e2e/e2e-record.sh"
+
+    var e2eArgs: [String] = []
+    var i = 2
+    while i < args.count {
+        e2eArgs.append(args[i])
+        i += 1
+    }
+
+    if !FileManager.default.fileExists(atPath: scriptPath) {
+        print("Error: e2e/e2e-record.sh not found at \(scriptPath)")
+        print("Make sure you're running from the project root directory.")
+        exit(1)
+    }
+
+    let task = Process()
+    task.launchPath = "/bin/bash"
+    task.arguments = [scriptPath] + e2eArgs
+    task.environment = ProcessInfo.processInfo.environment
+    do {
+        try task.run()
+        task.waitUntilExit()
+        exit(task.terminationStatus)
+    } catch {
+        print("Error: Failed to run e2e script: \(error.localizedDescription)")
+        exit(1)
+    }
 }

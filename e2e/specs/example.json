@@ -1,0 +1,20 @@
+{
+  "name": "Example E2E Test",
+  "url": "http://localhost:3000",
+  "app": "Google Chrome",
+  "steps": [
+    { "action": "navigate", "url": "http://localhost:3000" },
+    { "action": "wait", "ms": 1000 },
+    { "action": "screenshot", "path": "screenshots/01_landing.png" },
+    { "action": "assert", "selector": "h1", "expected": "Welcome" },
+    { "action": "click", "selector": "#get-started-btn" },
+    { "action": "wait", "ms": 500 },
+    { "action": "screenshot", "path": "screenshots/02_after_click.png" },
+    { "action": "type", "selector": "#email-input", "text": "test@example.com" },
+    { "action": "type", "selector": "#password-input", "text": "password123" },
+    { "action": "click", "selector": "#submit-btn" },
+    { "action": "wait", "ms": 2000 },
+    { "action": "screenshot", "path": "screenshots/03_dashboard.png" },
+    { "action": "assert", "selector": ".dashboard-title", "expected": "Dashboard" }
+  ]
+}

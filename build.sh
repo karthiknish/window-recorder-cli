@@ -6,7 +6,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="/tmp/WindowRecorder.app"
 BIN_DIR="${HOME}/.local/bin"
 
-echo "Building WindowRecorder.app..."
+# Read version from VERSION file
+VERSION_FILE="$SCRIPT_DIR/VERSION"
+if [ -f "$VERSION_FILE" ]; then
+  VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+else
+  VERSION="0.0.0-dev"
+fi
+
+echo "Building WindowRecorder.app v${VERSION}..."
 
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
@@ -26,8 +34,8 @@ swiftc \
 
 chmod +x "$APP_DIR/Contents/MacOS/WindowRecorder"
 
-# Write Info.plist
-cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
+# Write Info.plist with version
+cat > "$APP_DIR/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -38,6 +46,10 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
     <string>com.falnor.window-recorder</string>
     <key>CFBundleName</key>
     <string>WindowRecorder</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${VERSION}</string>
+    <key>CFBundleVersion</key>
+    <string>${VERSION}</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>LSUIElement</key>
@@ -46,7 +58,7 @@ cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
-echo "App built: $APP_DIR"
+echo "App built: $APP_DIR (v${VERSION})"
 
 # Build the CLI tool
 echo "Building wr CLI..."
@@ -58,7 +70,7 @@ swiftc \
 
 chmod +x "$BIN_DIR/wr"
 
-echo "CLI installed: $BIN_DIR/wr"
+echo "CLI installed: $BIN_DIR/wr (v${VERSION})"
 echo ""
 echo "Usage:"
 echo "  wr launch                          Start the recorder daemon"
@@ -67,3 +79,4 @@ echo "  wr start --app 'Google Chrome' --out rec.mov --duration 30"
 echo "  wr stop                            Stop recording"
 echo "  wr status                          Check status"
 echo "  wr kill                            Kill the daemon"
+echo "  wr e2e e2e/specs/example.json      Run E2E test with recording"

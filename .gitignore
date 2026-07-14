@@ -2,3 +2,8 @@ build/
 *.o
 *.app
 .DS_Store
+e2e/node_modules/
+e2e/screenshots/
+e2e/recordings/
+e2e/results.json
+recordings/
