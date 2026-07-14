@@ -83,14 +83,16 @@ func printUsage() {
       wr chrome tabs                   List open Chrome tabs
       wr chrome navigate <url>         Navigate current tab to URL
       wr chrome screenshot [--out p]   Take a screenshot
-      wr chrome click <selector>       Click an element
+      wr chrome click <selector>       Click an element (trusted pointer events)
         --container <selector>         Scope click within a container element
-      wr chrome type <selector> <text> Type text into an element (React-compatible)
+        --text "label"                 Click element by text label (fuzzy match)
+      wr chrome type <selector> <text> Type text into an element (React-compatible, char-by-char)
       wr chrome press <key>            Press a key (Enter, Tab, Escape)
       wr chrome scroll <selector>      Scroll to an element
       wr chrome evaluate <expr>        Evaluate JavaScript expression
       wr chrome assert <sel> <text>    Assert element contains text
       wr chrome wait <ms>              Wait for N milliseconds
+      wr chrome wait-for-text <sel> <text> [timeout_ms]  Wait until element contains text
       wr chrome snapshot               Get page accessibility tree
       wr chrome console [--errors]     Get console messages
       wr chrome network                List network requests
@@ -316,13 +318,16 @@ func runChrome() {
         }
         chromeScreenshot(out: out)
     case "click":
-        guard args.count >= 4 else { print("Usage: wr chrome click <selector> [--container <selector>]"); exit(1) }
+        guard args.count >= 4 else { print("Usage: wr chrome click <selector> [--container <sel>] [--text \"label\"]"); exit(1) }
         var container: String? = nil
+        var text: String? = nil
         var i = 4
         while i < args.count {
-            if args[i] == "--container" { container = args[i + 1]; i += 2 } else { i += 1 }
+            if args[i] == "--container" { container = args[i + 1]; i += 2 }
+            else if args[i] == "--text" { text = args[i + 1]; i += 2 }
+            else { i += 1 }
         }
-        chromeClick(selector: args[3], container: container)
+        chromeClick(selector: args[3], container: container, text: text)
     case "type":
         guard args.count >= 5 else { print("Usage: wr chrome type <selector> <text>"); exit(1) }
         chromeType(selector: args[3], text: args[4])
@@ -341,6 +346,10 @@ func runChrome() {
     case "wait":
         guard args.count >= 4 else { print("Usage: wr chrome wait <ms>"); exit(1) }
         chromeWait(ms: Int(args[3]) ?? 1000)
+    case "wait-for-text":
+        guard args.count >= 5 else { print("Usage: wr chrome wait-for-text <selector> <text> [timeout_ms]"); exit(1) }
+        let timeout = args.count >= 6 ? Int(args[5]) ?? 10000 : 10000
+        chromeWaitForText(selector: args[3], text: args[4], timeoutMs: timeout)
     case "snapshot":
         chromeSnapshot()
     case "console":
@@ -377,14 +386,16 @@ func printChromeUsage() {
       wr chrome tabs                       List open Chrome tabs
       wr chrome navigate <url>             Navigate current tab to URL
       wr chrome screenshot [--out <path>]  Take a screenshot (default: /tmp/screenshot.png)
-      wr chrome click <selector>           Click an element by CSS selector
+      wr chrome click <selector>           Click an element (trusted CDP pointer events)
         --container <selector>             Scope click within a container (e.g. ".dialog")
-      wr chrome type <selector> <text>     Type text into an element (React-compatible)
+        --text "label"                     Click element by text label (fuzzy match)
+      wr chrome type <selector> <text>     Type text into an element (React-compatible, char-by-char)
       wr chrome press <key>                Press a key (Enter, Tab, Escape, Space)
       wr chrome scroll <selector>          Scroll to an element
       wr chrome evaluate <expression>      Evaluate JavaScript and print result
       wr chrome assert <selector> <text>   Assert element contains text
       wr chrome wait <ms>                  Wait for N milliseconds
+      wr chrome wait-for-text <sel> <text> [timeout_ms]  Wait until element contains text
       wr chrome snapshot                   Get page accessibility tree
       wr chrome console [--errors]         Get console messages (optionally errors only)
       wr chrome network                    List network requests
@@ -396,11 +407,13 @@ func printChromeUsage() {
       wr chrome navigate https://google.com
       wr chrome type "textarea[name='q']" "hello world"
       wr chrome click "button" --container ".modal-dialog"
+      wr chrome click button --text "Approve"
       wr chrome press Enter
       wr chrome screenshot --out ~/Desktop/screenshot.png
       wr chrome click "#login-btn"
       wr chrome evaluate "document.title"
       wr chrome assert "h1" "Welcome"
+      wr chrome wait-for-text ".status" "complete" 30000
       wr chrome record https://example.com 15 --out ~/Desktop/rec.mov
     """)
 }

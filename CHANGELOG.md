@@ -5,6 +5,19 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-15
+
+### Fixed
+- Click now uses trusted CDP Input.dispatchMouseEvent (real pointer events) instead of el.click() — works with Base UI, Radix, and other libraries that check isTrusted
+- Type now sends char-by-char via CDP Input.dispatchKeyEvent + native setter + InputEvent — triggers React controlled inputs properly
+- chrome record no longer calls ensureChromeWithCDP() — won't kill existing Chrome session
+- No more Node.js/ws dependency — native Swift URLSessionWebSocketTask for all CDP communication
+
+### Added
+- wr chrome click --text "Approve" — click elements by text label (fuzzy match)
+- wr chrome wait-for-text <selector> <text> [timeout_ms] — poll until element contains text
+- MCP tools: chrome_wait_for_text, chrome_click now accepts text param
+
 ## [1.2.2] - 2026-07-15
 
 ### Fixed

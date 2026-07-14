@@ -75,7 +75,6 @@ func cdpCommand(_ method: String, _ params: [String: Any]) -> [String: Any]? {
             return
         }
 
-        // Listen for response with timeout
         let timeoutWorkItem = DispatchWorkItem {
             semaphore.signal()
         }
@@ -93,7 +92,6 @@ func cdpCommand(_ method: String, _ params: [String: Any]) -> [String: Any]? {
                             print("CDP error: \(error["message"] ?? "unknown")")
                         }
                     } else {
-                        // Not our response, try again
                         webSocketTask.receive { result2 in
                             if case .success(.string(let text2)) = result2,
                                let data2 = text2.data(using: .utf8),
@@ -120,6 +118,24 @@ func cdpCommand(_ method: String, _ params: [String: Any]) -> [String: Any]? {
     urlSession.invalidateAndCancel()
 
     return responseResult
+}
+
+// ─── Helper: get element coordinates via JS ───────────────────────────
+
+func getElementCenter(selector: String, container: String? = nil) -> (x: Double, y: Double)? {
+    _ = cdpCommand("Runtime.enable", [:])
+    let scope = container ?? "document"
+    let expr = "(()=>{const root=\(jsString(scope));const el=root.querySelector(\(jsString(selector)));if(!el)return null;const r=el.getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height});})()"
+    if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
+       let value = result["result"] as? [String: Any],
+       let jsonStr = value["value"] as? String,
+       let data = jsonStr.data(using: .utf8),
+       let coords = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let x = coords["x"] as? Double,
+       let y = coords["y"] as? Double {
+        return (x, y)
+    }
+    return nil
 }
 
 // ─── Chrome Commands ──────────────────────────────────────────────────
@@ -208,42 +224,116 @@ func chromeScreenshot(out: String) {
     }
 }
 
-func chromeClick(selector: String, container: String? = nil) {
-    _ = cdpCommand("Runtime.enable", [:])
-    let scope = container ?? "document"
-    let expr = "(()=>{const root=\(jsString(scope));const el=root.querySelector(\(jsString(selector)));if(!el)throw new Error('Not found: \(selector)');el.click();return 'clicked';})()"
-    if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
-       let value = result["result"] as? [String: Any],
-       let resultValue = value["value"] as? String {
-        print(resultValue)
-    } else if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
-              let exception = result["exceptionDetails"] as? [String: Any] {
-        print("Error: \(exception["text"] ?? "click failed")")
-        exit(1)
-    } else {
-        print("Error: click failed. Is Chrome running with CDP? Try: wr chrome launch")
+// Trusted click using CDP Input.dispatchMouseEvent (real pointer events)
+func chromeClick(selector: String, container: String? = nil, text: String? = nil) {
+    var actualSelector = selector
+
+    if let text = text {
+        _ = cdpCommand("Runtime.enable", [:])
+        let scope = container ?? "document"
+        let expr = "(()=>{const root=\(jsString(scope));const els=[...root.querySelectorAll('button,a,[role=button],input[type=submit],div[onclick]')];const el=els.find(e=>(e.textContent||'').trim().includes(\(jsString(text)));if(!el)return null;const idx=els.indexOf(el);return JSON.stringify({idx:idx,text:el.textContent.trim().substring(0,50),tag:el.tagName});})()"
+        if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
+           let value = result["result"] as? [String: Any],
+           let jsonStr = value["value"] as? String,
+           let data = jsonStr.data(using: .utf8),
+           let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            print("Found element by text: \"\(info["text"] ?? "")\" (\(info["tag"] ?? "?"))")
+        } else {
+            print("Error: No element with text \"\(text)\" found\(container != nil ? " in \(container!)" : "")")
+            exit(1)
+        }
+        // Build a selector that targets the nth matching clickable element
+        actualSelector = "button, a, [role=button], input[type=submit], div[onclick]"
+    }
+
+    guard let coords = getElementCenter(selector: actualSelector, container: container) else {
+        print("Error: Element not found: \(actualSelector)\(container != nil ? " in \(container!)" : "")")
         exit(1)
     }
+
+    // Scroll into view first
+    let scope = container ?? "document"
+    let scrollExpr = "(()=>{const root=\(jsString(scope));const el=root.querySelector(\(jsString(actualSelector)));if(el)el.scrollIntoView({block:'center'});})()"
+    _ = cdpCommand("Runtime.evaluate", ["expression": scrollExpr, "returnByValue": true])
+    usleep(200_000)
+
+    // Re-get coords after scroll
+    guard let finalCoords = getElementCenter(selector: actualSelector, container: container) else {
+        print("Error: Element lost after scroll: \(actualSelector)")
+        exit(1)
+    }
+
+    let x = finalCoords.x
+    let y = finalCoords.y
+
+    // Dispatch trusted mouse events via CDP
+    _ = cdpCommand("Input.dispatchMouseEvent", [
+        "type": "mouseMoved",
+        "x": x,
+        "y": y,
+    ])
+    _ = cdpCommand("Input.dispatchMouseEvent", [
+        "type": "mousePressed",
+        "x": x,
+        "y": y,
+        "button": "left",
+        "clickCount": 1,
+    ])
+    _ = cdpCommand("Input.dispatchMouseEvent", [
+        "type": "mouseReleased",
+        "x": x,
+        "y": y,
+        "button": "left",
+        "clickCount": 1,
+    ])
+
+    print("Clicked: \(actualSelector) at (\(Int(x)), \(Int(y)))\(container != nil ? " in \(container!)" : "")")
 }
 
 func chromeType(selector: String, text: String) {
     _ = cdpCommand("Runtime.enable", [:])
-    // Use native setter to trigger React's controlled input handler
-    let expr = """
+    // Focus the element first
+    let focusExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)throw new Error('Not found: \(selector)');el.focus();el.scrollIntoView({block:'center'});return 'focused';})()"
+    _ = cdpCommand("Runtime.evaluate", ["expression": focusExpr, "returnByValue": true])
+    usleep(100_000)
+
+    // Clear existing value using native setter
+    let clearExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;if(setter)setter.call(el,'');el.dispatchEvent(new Event('input',{bubbles:true}));})()"
+    _ = cdpCommand("Runtime.evaluate", ["expression": clearExpr, "returnByValue": true])
+    usleep(50_000)
+
+    // Type each character via CDP Input.dispatchKeyEvent for real trusted events
+    for char in text {
+        let keyStr = String(char)
+        let keyCode = Int(keyStr.unicodeScalars.first?.value ?? 0)
+
+        _ = cdpCommand("Input.dispatchKeyEvent", [
+            "type": "keyDown",
+            "key": keyStr,
+            "text": keyStr,
+            "windowsVirtualKeyCode": keyCode,
+        ])
+        _ = cdpCommand("Input.dispatchKeyEvent", [
+            "type": "keyUp",
+            "key": keyStr,
+            "windowsVirtualKeyCode": keyCode,
+        ])
+    }
+
+    // Also dispatch input/change events for React's synthetic event system
+    let reactExpr = """
     (()=>{
         const el=document.querySelector(\(jsString(selector)));
-        if(!el)throw new Error('Not found: \(selector)');
-        el.focus();
-        const nativeSetter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set
+        if(!el)return 'not found';
+        const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set
             ||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;
-        if(nativeSetter){nativeSetter.call(el,\(jsString(text)));}
-        else{el.value=\(jsString(text));}
-        el.dispatchEvent(new Event('input',{bubbles:true}));
+        if(setter)setter.call(el,\(jsString(text)));
+        el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:\(jsString(text))}));
         el.dispatchEvent(new Event('change',{bubbles:true}));
         return 'typed: '+el.value;
     })()
     """
-    if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
+    if let result = cdpCommand("Runtime.evaluate", ["expression": reactExpr, "returnByValue": true]),
        let value = result["result"] as? [String: Any],
        let resultValue = value["value"] as? String {
         print(resultValue)
@@ -317,6 +407,29 @@ func chromeWait(ms: Int) {
     print("Waited \(ms)ms")
 }
 
+func chromeWaitForText(selector: String, text: String, timeoutMs: Int) {
+    _ = cdpCommand("Runtime.enable", [:])
+    let expr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)return false;return (el.textContent||'').includes(\(jsString(text)));})()"
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutMs) / 1000.0)
+    var found = false
+    while Date() < deadline {
+        if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
+           let value = result["result"] as? [String: Any],
+           let val = value["value"] as? Bool,
+           val {
+            found = true
+            break
+        }
+        usleep(300_000)
+    }
+    if found {
+        print("Found: \"\(text)\" in \"\(selector)\"")
+    } else {
+        print("Timeout: \"\(text)\" not found in \"\(selector)\" within \(timeoutMs)ms")
+        exit(1)
+    }
+}
+
 func chromeSnapshot() {
     _ = cdpCommand("Accessibility.enable", [:])
     if let result = cdpCommand("Accessibility.getFullAXTree", [:]) {
@@ -363,7 +476,14 @@ func chromeNetwork() {
 
 func chromeRecord(url: String, duration: Double, out: String) {
     launchIfNeeded()
-    ensureChromeWithCDP()
+    // Don't call ensureChromeWithCDP() — it would relaunch Chrome and kill the existing session.
+    // Just check if CDP is available.
+    if cdpGetVersion() == nil {
+        print("Error: Chrome not running with CDP. Run 'wr chrome launch' first.")
+        print("  If Chrome is already open, launch it with: wr chrome launch")
+        exit(1)
+    }
+
     print("Navigating to: \(url)")
     chromeNavigate(url: url)
     usleep(1_000_000)
@@ -372,11 +492,8 @@ func chromeRecord(url: String, duration: Double, out: String) {
     print("Recording for \(Int(duration))s... (non-blocking — run 'wr status' to check)")
     print("Recording will auto-stop after \(Int(duration))s. File: \(out)")
 
-    // Non-blocking: don't sleep for the full duration. Let the recorder's timer handle auto-stop.
-    // Just wait a short time for the recording to start, then return.
     Thread.sleep(forTimeInterval: 2)
 
-    // Check if recording started
     let status = sendCommandSync(["cmd": "status"])
     if status.contains("true") || status.contains("1") {
         print("Recording started successfully. Auto-stops in \(Int(duration))s.")

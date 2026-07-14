@@ -62,12 +62,13 @@ func runMCPServer() {
         ],
         [
             "name": "chrome_click",
-            "description": "Click an element in Chrome by CSS selector. Optionally scope within a container.",
+            "description": "Click an element in Chrome by CSS selector. Uses trusted CDP pointer events. Optionally scope within a container or click by text label.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
                     "selector": ["type": "string", "description": "CSS selector for the element to click"],
-                    "container": ["type": "string", "description": "CSS selector for a container to scope the click (e.g. '.dialog')"]
+                    "container": ["type": "string", "description": "CSS selector for a container to scope the click (e.g. '.dialog')"],
+                    "text": ["type": "string", "description": "Click element by text label (fuzzy match, e.g. 'Approve')"]
                 ] as [String: Any],
                 "required": ["selector"]
             ] as [String: Any]
@@ -138,6 +139,19 @@ func runMCPServer() {
                     "ms": ["type": "number", "description": "Milliseconds to wait"]
                 ] as [String: Any],
                 "required": ["ms"]
+            ] as [String: Any]
+        ],
+        [
+            "name": "chrome_wait_for_text",
+            "description": "Wait until an element contains specific text. Polls every 300ms until timeout.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "selector": ["type": "string", "description": "CSS selector for the element to check"],
+                    "text": ["type": "string", "description": "Text to wait for"],
+                    "timeoutMs": ["type": "number", "description": "Timeout in milliseconds (default: 10000)"]
+                ] as [String: Any],
+                "required": ["selector", "text"]
             ] as [String: Any]
         ],
         [
@@ -287,8 +301,9 @@ func handleMCPTool(name: String, args: [String: Any]) -> String {
     case "chrome_click":
         guard let selector = args["selector"] as? String else { return "Error: selector required" }
         let container = args["container"] as? String
-        chromeClick(selector: selector, container: container)
-        return "Clicked element: \(selector)\(container != nil ? " in \(container!)" : "")"
+        let text = args["text"] as? String
+        chromeClick(selector: selector, container: container, text: text)
+        return "Clicked element: \(selector)\(container != nil ? " in \(container!)" : "")\(text != nil ? " matching text '\(text!)'" : "")"
 
     case "chrome_type":
         guard let selector = args["selector"] as? String,
@@ -331,6 +346,24 @@ func handleMCPTool(name: String, args: [String: Any]) -> String {
         guard let ms = args["ms"] as? Int else { return "Error: ms required" }
         usleep(UInt32(ms * 1000))
         return "Waited \(ms)ms"
+
+    case "chrome_wait_for_text":
+        guard let selector = args["selector"] as? String,
+              let text = args["text"] as? String else { return "Error: selector and text required" }
+        let timeoutMs = (args["timeoutMs"] as? Int) ?? 10000
+        _ = cdpCommand("Runtime.enable", [:])
+        let expr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)return false;return (el.textContent||'').includes(\(jsString(text)));})()"
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutMs) / 1000.0)
+        while Date() < deadline {
+            if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
+               let value = result["result"] as? [String: Any],
+               let val = value["value"] as? Bool,
+               val {
+                return "Found: \"\(text)\" in \"\(selector)\""
+            }
+            usleep(300_000)
+        }
+        return "Timeout: \"\(text)\" not found in \"\(selector)\" within \(timeoutMs)ms"
 
     case "chrome_snapshot":
         _ = cdpCommand("Accessibility.enable", [:])
