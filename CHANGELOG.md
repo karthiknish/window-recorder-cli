@@ -5,6 +5,15 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] - 2026-07-15
+
+### Fixed
+- Menu bar icon now appears on macOS 26 (Tahoe) — launch binary directly
+  instead of via `open` (LaunchServices) which fails to render NSStatusItem
+- Menu bar icon uses drawn colored circle (green=ready, red=recording)
+  instead of SF Symbols which render invisibly on Tahoe
+- Removed LSUIElement from Info.plist (causes NSStatusItem bug on Tahoe)
+
 ## [1.0.5] - 2026-07-15
 
 ### Fixed

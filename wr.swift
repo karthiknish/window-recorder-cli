@@ -187,16 +187,16 @@ func launchApp() {
         return
     }
 
-    if !FileManager.default.fileExists(atPath: APP_PATH) {
-        print("Error: \(APP_PATH) not found. Build it first.")
+    let binaryPath = "\(APP_PATH)/Contents/MacOS/WindowRecorder"
+    if !FileManager.default.fileExists(atPath: binaryPath) {
+        print("Error: \(binaryPath) not found. Build it first.")
         exit(1)
     }
 
-    let openTask = Process()
-    openTask.launchPath = "/usr/bin/open"
-    openTask.arguments = [APP_PATH]
-    try? openTask.run()
-    openTask.waitUntilExit()
+    let proc = Process()
+    proc.launchPath = binaryPath
+    proc.arguments = []
+    try? proc.run()
 
     for _ in 0..<20 {
         if FileManager.default.fileExists(atPath: SOCKET_PATH) {

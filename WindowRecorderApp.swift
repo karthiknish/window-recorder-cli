@@ -360,8 +360,15 @@ final class MenuBarController: NSObject {
     }
 
     func setup() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "●"
+        createStatusItem()
+    }
+
+    private func createStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: 22)
+        if let button = statusItem.button {
+            button.image = makeCircleImage(color: .systemGreen)
+        }
+        NSLog("[WindowRecorder] Menu bar item created, button: \(statusItem.button != nil)")
 
         let menu = NSMenu()
 
@@ -413,18 +420,27 @@ final class MenuBarController: NSObject {
 
     private func refreshStatus() {
         if recorder.isRecording {
-            statusItem.button?.title = "●"
-            statusItem.button?.contentTintColor = .systemRed
+            statusItem.button?.image = makeCircleImage(color: .systemRed)
             statusMenuItem.title = "Status: Recording"
             recordingInfoMenuItem.title = "Recording in progress..."
             recordingInfoMenuItem.isHidden = false
         } else {
-            statusItem.button?.title = "●"
-            statusItem.button?.contentTintColor = .systemGreen
+            statusItem.button?.image = makeCircleImage(color: .systemGreen)
             statusMenuItem.title = "Status: Ready"
             recordingInfoMenuItem.title = "No active recording"
             recordingInfoMenuItem.isHidden = false
         }
+    }
+
+    private func makeCircleImage(color: NSColor) -> NSImage {
+        let size = NSSize(width: 14, height: 14)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        color.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 1, y: 1, width: 12, height: 12)).fill()
+        img.unlockFocus()
+        img.isTemplate = false
+        return img
     }
 
     @objc func listWindows() {
@@ -571,7 +587,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController(recorder: server.recorder, server: server, version: version)
         menuBarController.setup()
 
-        server.start()
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            self?.server.start()
+        }
         os_log("WindowRecorder Ready (v%{public}s)", log: log, type: .info, version)
     }
 
