@@ -124,8 +124,8 @@ func cdpCommand(_ method: String, _ params: [String: Any]) -> [String: Any]? {
 
 func getElementCenter(selector: String, container: String? = nil) -> (x: Double, y: Double)? {
     _ = cdpCommand("Runtime.enable", [:])
-    let scope = container ?? "document"
-    let expr = "(()=>{const root=\(jsString(scope));const el=root.querySelector(\(jsString(selector)));if(!el)return null;const r=el.getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height});})()"
+    let rootExpr = container != nil ? "document.querySelector(\(jsString(container!)))" : "document"
+    let expr = "(()=>{const root=\(rootExpr);if(!root)return null;const el=root.querySelector(\(jsString(selector)));if(!el)return null;const r=el.getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height});})()"
     if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
        let value = result["result"] as? [String: Any],
        let jsonStr = value["value"] as? String,
@@ -230,8 +230,8 @@ func chromeClick(selector: String, container: String? = nil, text: String? = nil
 
     if let text = text {
         _ = cdpCommand("Runtime.enable", [:])
-        let scope = container ?? "document"
-        let expr = "(()=>{const root=\(jsString(scope));const els=[...root.querySelectorAll('button,a,[role=button],input[type=submit],div[onclick]')];const el=els.find(e=>(e.textContent||'').trim().includes(\(jsString(text)));if(!el)return null;const idx=els.indexOf(el);return JSON.stringify({idx:idx,text:el.textContent.trim().substring(0,50),tag:el.tagName});})()"
+        let rootExpr = container != nil ? "document.querySelector(\(jsString(container!)))" : "document"
+        let expr = "(()=>{const root=\(rootExpr);if(!root)return null;const els=[...root.querySelectorAll('button,a,[role=button],input[type=submit],div[onclick]')];const el=els.find(e=>(e.textContent||'').trim().includes(\(jsString(text)));if(!el)return null;return JSON.stringify({text:el.textContent.trim().substring(0,50),tag:el.tagName,x:0,y:0});})()"
         if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
            let value = result["result"] as? [String: Any],
            let jsonStr = value["value"] as? String,
@@ -242,7 +242,6 @@ func chromeClick(selector: String, container: String? = nil, text: String? = nil
             print("Error: No element with text \"\(text)\" found\(container != nil ? " in \(container!)" : "")")
             exit(1)
         }
-        // Build a selector that targets the nth matching clickable element
         actualSelector = "button, a, [role=button], input[type=submit], div[onclick]"
     }
 
@@ -252,8 +251,8 @@ func chromeClick(selector: String, container: String? = nil, text: String? = nil
     }
 
     // Scroll into view first
-    let scope = container ?? "document"
-    let scrollExpr = "(()=>{const root=\(jsString(scope));const el=root.querySelector(\(jsString(actualSelector)));if(el)el.scrollIntoView({block:'center'});})()"
+    let rootExpr = container != nil ? "document.querySelector(\(jsString(container!)))" : "document"
+    let scrollExpr = "(()=>{const root=\(rootExpr);if(!root)return;const el=root.querySelector(\(jsString(actualSelector)));if(el)el.scrollIntoView({block:'center'});})()"
     _ = cdpCommand("Runtime.evaluate", ["expression": scrollExpr, "returnByValue": true])
     usleep(200_000)
 
@@ -292,35 +291,30 @@ func chromeClick(selector: String, container: String? = nil, text: String? = nil
 
 func chromeType(selector: String, text: String) {
     _ = cdpCommand("Runtime.enable", [:])
-    // Focus the element first
-    let focusExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)throw new Error('Not found: \(selector)');el.focus();el.scrollIntoView({block:'center'});return 'focused';})()"
-    _ = cdpCommand("Runtime.evaluate", ["expression": focusExpr, "returnByValue": true])
+    // Focus and clear the element first
+    let focusExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)throw new Error('Not found: \(selector)');el.focus();el.scrollIntoView({block:'center'});const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;if(setter)setter.call(el,'');el.dispatchEvent(new Event('input',{bubbles:true}));return 'focused';})()"
+    if let result = cdpCommand("Runtime.evaluate", ["expression": focusExpr, "returnByValue": true]),
+       let value = result["result"] as? [String: Any],
+       let resultValue = value["value"] as? String {
+        if resultValue != "focused" {
+            print("Error: \(resultValue)")
+            exit(1)
+        }
+    } else if let result = cdpCommand("Runtime.evaluate", ["expression": focusExpr, "returnByValue": true]),
+              let exception = result["exceptionDetails"] as? [String: Any] {
+        print("Error: \(exception["text"] ?? "focus failed")")
+        exit(1)
+    }
     usleep(100_000)
 
-    // Clear existing value using native setter
-    let clearExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;if(setter)setter.call(el,'');el.dispatchEvent(new Event('input',{bubbles:true}));})()"
-    _ = cdpCommand("Runtime.evaluate", ["expression": clearExpr, "returnByValue": true])
-    usleep(50_000)
-
-    // Type each character via CDP Input.dispatchKeyEvent for real trusted events
+    // Type each character via CDP Input.insertText (trusted text insertion)
     for char in text {
-        let keyStr = String(char)
-        let keyCode = Int(keyStr.unicodeScalars.first?.value ?? 0)
-
-        _ = cdpCommand("Input.dispatchKeyEvent", [
-            "type": "keyDown",
-            "key": keyStr,
-            "text": keyStr,
-            "windowsVirtualKeyCode": keyCode,
-        ])
-        _ = cdpCommand("Input.dispatchKeyEvent", [
-            "type": "keyUp",
-            "key": keyStr,
-            "windowsVirtualKeyCode": keyCode,
-        ])
+        let charStr = String(char)
+        _ = cdpCommand("Input.insertText", ["text": charStr])
     }
+    usleep(100_000)
 
-    // Also dispatch input/change events for React's synthetic event system
+    // Dispatch React-compatible events via native setter + InputEvent
     let reactExpr = """
     (()=>{
         const el=document.querySelector(\(jsString(selector)));
