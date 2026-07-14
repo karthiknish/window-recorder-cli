@@ -98,6 +98,24 @@ func printUsage() {
       wr mcp                           Run as MCP server (JSON-RPC over stdio)
                                        Exposes Chrome recording tools to AI agents
 
+      MCP Tools:
+        record_chrome                  Record Chrome window (duration, out)
+        record_chrome_navigate         Navigate + record (url, duration, out)
+        stop_recording                 Stop current recording
+        recording_status               Check recording state
+        chrome_screenshot              Take screenshot (out)
+        chrome_navigate                Navigate to URL (url)
+        chrome_click                   Click element (selector)
+        chrome_type                    Type text (selector, text)
+        chrome_evaluate                Evaluate JS (expression)
+        chrome_press                   Press key (key)
+        chrome_scroll                  Scroll to element (selector)
+        chrome_assert                  Assert text content (selector, expected)
+        chrome_wait                    Wait milliseconds (ms)
+        chrome_snapshot                Get accessibility tree
+        chrome_tabs                    List Chrome tabs
+        chrome_network                 List network requests
+
     Examples:
       wr launch
       wr list

@@ -93,6 +93,66 @@ func runMCPServer() {
                 ] as [String: Any],
                 "required": ["expression"]
             ] as [String: Any]
+        ],
+        [
+            "name": "chrome_press",
+            "description": "Press a keyboard key in Chrome (Enter, Tab, Escape, Space).",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "key": ["type": "string", "description": "Key to press (Enter, Tab, Escape, Space)"]
+                ] as [String: Any],
+                "required": ["key"]
+            ] as [String: Any]
+        ],
+        [
+            "name": "chrome_scroll",
+            "description": "Scroll to an element in Chrome by CSS selector.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "selector": ["type": "string", "description": "CSS selector for the element to scroll to"]
+                ] as [String: Any],
+                "required": ["selector"]
+            ] as [String: Any]
+        ],
+        [
+            "name": "chrome_assert",
+            "description": "Assert that an element in Chrome contains expected text.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "selector": ["type": "string", "description": "CSS selector for the element"],
+                    "expected": ["type": "string", "description": "Expected text content"]
+                ] as [String: Any],
+                "required": ["selector", "expected"]
+            ] as [String: Any]
+        ],
+        [
+            "name": "chrome_wait",
+            "description": "Wait for a specified number of milliseconds.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "ms": ["type": "number", "description": "Milliseconds to wait"]
+                ] as [String: Any],
+                "required": ["ms"]
+            ] as [String: Any]
+        ],
+        [
+            "name": "chrome_snapshot",
+            "description": "Get the accessibility tree of the current Chrome page.",
+            "inputSchema": ["type": "object", "properties": [:]] as [String: Any]
+        ],
+        [
+            "name": "chrome_tabs",
+            "description": "List all open Chrome tabs.",
+            "inputSchema": ["type": "object", "properties": [:]] as [String: Any]
+        ],
+        [
+            "name": "chrome_network",
+            "description": "List network requests made by the current Chrome page.",
+            "inputSchema": ["type": "object", "properties": [:]] as [String: Any]
         ]
     ]
 
@@ -238,6 +298,81 @@ func handleMCPTool(name: String, args: [String: Any]) -> String {
         guard let expr = args["expression"] as? String else { return "Error: expression required" }
         let result = chromeEvaluate(expression: expr)
         return "Result: \(result)"
+
+    case "chrome_press":
+        guard let key = args["key"] as? String else { return "Error: key required" }
+        chromePress(key: key)
+        return "Pressed: \(key)"
+
+    case "chrome_scroll":
+        guard let selector = args["selector"] as? String else { return "Error: selector required" }
+        chromeScroll(selector: selector)
+        return "Scrolled to: \(selector)"
+
+    case "chrome_assert":
+        guard let selector = args["selector"] as? String,
+              let expected = args["expected"] as? String else { return "Error: selector and expected required" }
+        _ = cdpCommand("Runtime.enable", [:])
+        let expr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)return null;return el.textContent||el.innerText||'';})()"
+        if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
+           let value = result["result"] as? [String: Any],
+           let actual = value["value"] as? String {
+            if actual.contains(expected) {
+                return "PASS: \"\(selector)\" contains \"\(expected)\""
+            } else {
+                return "FAIL: \"\(selector)\" expected \"\(expected)\", got \"\(actual.trimmingCharacters(in: .whitespacesAndNewlines))\""
+            }
+        }
+        return "FAIL: element \"\(selector)\" not found"
+
+    case "chrome_wait":
+        guard let ms = args["ms"] as? Int else { return "Error: ms required" }
+        usleep(UInt32(ms * 1000))
+        return "Waited \(ms)ms"
+
+    case "chrome_snapshot":
+        _ = cdpCommand("Accessibility.enable", [:])
+        if let result = cdpCommand("Accessibility.getFullAXTree", [:]) {
+            if let data = try? JSONSerialization.data(withJSONObject: result, options: .prettyPrinted),
+               let str = String(data: data, encoding: .utf8) {
+                return str
+            }
+        }
+        return "Error: snapshot failed"
+
+    case "chrome_tabs":
+        guard let tabs = cdpGetJSON("/json") else {
+            return "Error: Cannot connect to Chrome. Use chrome_navigate or record_chrome_navigate first."
+        }
+        var lines: [String] = ["Chrome tabs:"]
+        for (i, tab) in tabs.enumerated() {
+            let type = tab["type"] ?? "?"
+            let title = tab["title"] ?? ""
+            let url = tab["url"] ?? ""
+            if type as? String == "page" {
+                lines.append("  [\(i)] \(title) — \(url)")
+            }
+        }
+        return lines.joined(separator: "\n")
+
+    case "chrome_network":
+        _ = cdpCommand("Network.enable", [:])
+        if let result = cdpCommand("Runtime.evaluate", ["expression": "JSON.stringify(performance.getEntriesByType('resource').map(r=>({name:r.name,type:r.initiatorType,duration:Math.round(r.duration)})))", "returnByValue": true]),
+           let value = result["result"] as? [String: Any],
+           let jsonStr = value["value"] as? String,
+           let data = jsonStr.data(using: .utf8),
+           let resources = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            var lines: [String] = ["Network requests (\(resources.count) total):"]
+            for r in resources {
+                let name = (r["name"] as? String ?? "")
+                let shortName = name.count > 80 ? String(name.suffix(80)) : name
+                let type = r["type"] ?? "?"
+                let duration = r["duration"] ?? 0
+                lines.append("  [\(type)] \(shortName) (\(duration)ms)")
+            }
+            return lines.joined(separator: "\n")
+        }
+        return "Error: failed to get network requests"
 
     default:
         return "Unknown tool: \(name)"

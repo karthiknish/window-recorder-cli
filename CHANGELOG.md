@@ -5,6 +5,14 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-15
+
+### Added
+- 7 new MCP tools: chrome_press, chrome_scroll, chrome_assert, chrome_wait,
+  chrome_snapshot, chrome_tabs, chrome_network (16 total)
+- Full MCP tools list in CLI help output
+- MCP-safe error handling (no exit() calls in MCP handlers)
+
 ## [1.0.9] - 2026-07-15
 
 ### Fixed
