@@ -62,36 +62,34 @@ jobs:
           tar czf "artifacts/e2e-tools-v${VERSION}.tar.gz" --exclude='e2e/node_modules' --exclude='e2e/screenshots' --exclude='e2e/recordings' --exclude='e2e/results.json' e2e/
 
           # Create install script
-          cat > artifacts/install.sh << 'INSTALL_EOF'
-#!/bin/bash
-set -e
-echo "Installing WindowRecorder..."
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Install the app
-if [ -f "$SCRIPT_DIR/WindowRecorder-v"*.app.zip ]; then
-  unzip -o "$SCRIPT_DIR"/WindowRecorder-v*.app.zip -d /tmp/
-  cp -R /tmp/WindowRecorder.app /Applications/ 2>/dev/null || true
-  echo "App installed to /Applications/WindowRecorder.app"
-fi
-
-# Install the CLI
-if [ -f "$SCRIPT_DIR/wr-v"* ]; then
-  mkdir -p ~/.local/bin
-  cp "$SCRIPT_DIR"/wr-v* ~/.local/bin/wr
-  chmod +x ~/.local/bin/wr
-  echo "CLI installed to ~/.local/bin/wr"
-  echo "Add ~/.local/bin to your PATH if not already:"
-  echo '  export PATH="$HOME/.local/bin:$PATH"'
-fi
-
-echo ""
-echo "Done! Usage:"
-echo "  wr launch        Start the recorder"
-echo "  wr list          List windows"
-echo "  wr start --app 'Google Chrome' --out rec.mov --duration 30"
-echo "  wr e2e e2e/specs/example.json   Run E2E tests with recording"
-INSTALL_EOF
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'set -e' \
+            'echo "Installing WindowRecorder..."' \
+            'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"' \
+            '' \
+            'if [ -f "$SCRIPT_DIR/WindowRecorder-v"*.app.zip ]; then' \
+            '  unzip -o "$SCRIPT_DIR"/WindowRecorder-v*.app.zip -d /tmp/' \
+            '  cp -R /tmp/WindowRecorder.app /Applications/ 2>/dev/null || true' \
+            '  echo "App installed to /Applications/WindowRecorder.app"' \
+            'fi' \
+            '' \
+            'if [ -f "$SCRIPT_DIR/wr-v"* ]; then' \
+            '  mkdir -p ~/.local/bin' \
+            '  cp "$SCRIPT_DIR"/wr-v* ~/.local/bin/wr' \
+            '  chmod +x ~/.local/bin/wr' \
+            '  echo "CLI installed to ~/.local/bin/wr"' \
+            '  echo "Add ~/.local/bin to your PATH if not already:"' \
+            "  echo '  export PATH=\"\$HOME/.local/bin:\$PATH\"'" \
+            'fi' \
+            '' \
+            'echo ""' \
+            'echo "Done! Usage:"' \
+            'echo "  wr launch        Start the recorder"' \
+            'echo "  wr list          List windows"' \
+            "echo \"  wr start --app 'Google Chrome' --out rec.mov --duration 30\"" \
+            'echo "  wr e2e e2e/specs/example.json   Run E2E tests with recording"' \
+            > artifacts/install.sh
           chmod +x artifacts/install.sh
 
       - name: Extract changelog for release notes
