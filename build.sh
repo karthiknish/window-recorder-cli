@@ -23,15 +23,65 @@ mkdir -p "$BIN_DIR"
 mkdir -p "$(dirname "$HASH_FILE")"
 
 # Ensure stable code signing for TCC persistence
-# Ad-hoc signing is used (no Developer ID available). To avoid resetting
-# TCC permissions on every build, we only recompile and re-sign when source
-# files actually change. A hash of source files is stored and compared.
+# A self-signed code-signing certificate is created once and reused across
+# builds so macOS TCC recognises the same identity (no repeated permission prompts).
+CERT_NAME="WindowRecorder Dev"
+SIGN_IDENTITY="-"
 NEEDS_REBUILD=true
 CURRENT_HASH=$(cat "$SCRIPT_DIR/WindowRecorderApp.swift" "$SCRIPT_DIR/wr.swift" "$SCRIPT_DIR/VERSION" 2>/dev/null | shasum -a 256 | awk '{print $1}')
 if [ -f "$HASH_FILE" ] && [ "$(cat "$HASH_FILE")" = "$CURRENT_HASH" ]; then
   if codesign --verify --verbose=1 "$APP_DIR" 2>/dev/null; then
     NEEDS_REBUILD=false
   fi
+fi
+
+ensure_signing_cert() {
+  if security find-identity -p codesigning -v 2>/dev/null | grep -q "$CERT_NAME"; then
+    return 0
+  fi
+
+  echo "Creating self-signed code-signing certificate '$CERT_NAME' (one-time setup)..."
+
+  TMP_DIR=$(mktemp -d)
+  local KEY="$TMP_DIR/wr_key.pem"
+  local CSR="$TMP_DIR/wr_csr.pem"
+  local CERT="$TMP_DIR/wr_cert.pem"
+  local P12="$TMP_DIR/wr_dev.p12"
+  local CONF="$TMP_DIR/wr_openssl.cnf"
+
+  cat > "$CONF" << CNF
+[req]
+distinguished_name = req_dn
+prompt = no
+[req_dn]
+CN = $CERT_NAME
+[v3_ext]
+extendedKeyUsage = codeSigning
+basicConstraints = critical,CA:FALSE
+keyUsage = digitalSignature
+CNF
+
+  openssl req -x509 -newkey rsa:2048 -keyout "$KEY" -out "$CERT" \
+    -days 3650 -nodes -config "$CONF" -extensions v3_ext 2>/dev/null
+
+  openssl pkcs12 -export -inkey "$KEY" -in "$CERT" -out "$P12" \
+    -passout pass:wrtemp 2>/dev/null
+
+  security import "$P12" -P wrtemp -T /usr/bin/codesign 2>/dev/null
+
+  security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db "$CERT" 2>/dev/null
+
+  rm -rf "$TMP_DIR"
+
+  if security find-identity -p codesigning -v 2>/dev/null | grep -q "$CERT_NAME"; then
+    echo "Certificate created and trusted for code signing."
+    return 0
+  fi
+  return 1
+}
+
+if ensure_signing_cert; then
+  SIGN_IDENTITY="$CERT_NAME"
 fi
 
 if [ "$NEEDS_REBUILD" = true ]; then
@@ -82,8 +132,13 @@ EOF
     cp "$SCRIPT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
   fi
 
-  # Ad-hoc sign with stable bundle identifier
-  codesign --force --sign - --identifier "com.falnor.window-recorder" "$APP_DIR" 2>&1 || true
+  # Sign with stable identity (or ad-hoc fallback)
+  if [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "Warning: No stable signing cert. Using ad-hoc signing (TCC may reset on rebuild)."
+  else
+    echo "Signing with '$SIGN_IDENTITY'..."
+  fi
+  codesign --force --sign "$SIGN_IDENTITY" --identifier "com.falnor.window-recorder" "$APP_DIR" 2>&1 || true
 
   echo "$CURRENT_HASH" > "$HASH_FILE"
 else

@@ -434,13 +434,14 @@ final class MenuBarController: NSObject {
                 let windowList = content.windows.prefix(20).map { w in
                     "  \(w.windowID)  \(w.owningApplication?.applicationName ?? "?") — \(w.title ?? "?")"
                 }.joined(separator: "\n")
-                let alert = NSAlert()
-                alert.messageText = "Available Windows"
-                alert.informativeText = windowList.isEmpty ? "No windows found" : windowList
-                alert.alertStyle = .informational
-                alert.runModal()
+                let displayText = windowList.isEmpty ? "No windows found" : windowList
+                DispatchQueue.main.async { [weak self] in
+                    self?.showInfoAlert(title: "Available Windows", message: displayText)
+                }
             } catch {
-                showError("Failed to list windows: \(error.localizedDescription)")
+                DispatchQueue.main.async { [weak self] in
+                    self?.showError("Failed to list windows: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -454,12 +455,10 @@ final class MenuBarController: NSObject {
     }
 
     @objc func showAbout() {
-        let alert = NSAlert()
-        alert.messageText = "WindowRecorder"
-        alert.informativeText = "Version \(version)\n\nmacOS screen recording tool\nScreenCaptureKit + AVFoundation\n\nhttps://github.com/karthiknish/window-recorder-cli"
-        alert.alertStyle = .informational
-        alert.icon = NSImage(contentsOfFile: "/Applications/WindowRecorder.app/Contents/Resources/AppIcon.icns")
-        alert.runModal()
+        showInfoAlert(
+            title: "WindowRecorder",
+            message: "Version \(version)\n\nmacOS screen recording tool\nScreenCaptureKit + AVFoundation\n\nhttps://github.com/karthiknish/window-recorder-cli"
+        )
     }
 
     @objc func checkForUpdates() {
@@ -487,12 +486,8 @@ final class MenuBarController: NSObject {
 
                     if latestVersion == self.version {
                         self.updateMenuItem.title = "Up to date (v\(self.version))"
-                        let alert = NSAlert()
-                        alert.messageText = "You're up to date!"
-                        alert.informativeText = "WindowRecorder v\(self.version) is the latest version."
-                        alert.alertStyle = .informational
-                        alert.runModal()
-                    } else {
+                        self.showInfoAlert(title: "You're up to date!", message: "WindowRecorder v\(self.version) is the latest version.")
+                    } else if self.compareVersions(latest: latestVersion, current: self.version) {
                         self.updateMenuItem.title = "Update available (v\(latestVersion))"
                         let alert = NSAlert()
                         alert.messageText = "Update available!"
@@ -506,6 +501,9 @@ final class MenuBarController: NSObject {
                                 NSWorkspace.shared.open(url)
                             }
                         }
+                    } else {
+                        self.updateMenuItem.title = "Up to date (v\(self.version))"
+                        self.showInfoAlert(title: "You're up to date!", message: "WindowRecorder v\(self.version) is the latest published version.")
                     }
                 }
             } catch {
@@ -526,10 +524,33 @@ final class MenuBarController: NSObject {
     }
 
     private func showError(_ message: String) {
+        showInfoAlert(title: "Error", message: message, style: .warning)
+    }
+
+    private func compareVersions(latest: String, current: String) -> Bool {
+        let latestParts = latest.split(separator: ".").compactMap { Int($0) }
+        let currentParts = current.split(separator: ".").compactMap { Int($0) }
+        let maxLen = max(latestParts.count, currentParts.count)
+        for i in 0..<maxLen {
+            let l = i < latestParts.count ? latestParts[i] : 0
+            let c = i < currentParts.count ? currentParts[i] : 0
+            if l > c { return true }
+            if l < c { return false }
+        }
+        return false
+    }
+
+    private func showInfoAlert(title: String, message: String, style: NSAlert.Style = .informational) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.showInfoAlert(title: title, message: message, style: style)
+            }
+            return
+        }
         let alert = NSAlert()
-        alert.messageText = "Error"
+        alert.messageText = title
         alert.informativeText = message
-        alert.alertStyle = .warning
+        alert.alertStyle = style
         alert.runModal()
     }
 }
