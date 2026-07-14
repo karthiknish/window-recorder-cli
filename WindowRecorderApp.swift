@@ -197,7 +197,7 @@ extension Notification.Name {
 final class SocketServer {
     private var serverFd: Int32 = -1
     private var clientFd: Int32 = -1
-    private let recorder = Recorder()
+    let recorder = Recorder()
 
     func start() {
         unlink(SOCKET_PATH)
@@ -340,20 +340,228 @@ final class SocketServer {
     }
 }
 
+// ─── Menu Bar Controller ──────────────────────────────────────────────
+final class MenuBarController: NSObject {
+    private var statusItem: NSStatusItem!
+    private var recorder: Recorder
+    private var server: SocketServer
+    private var version: String
+    private var updateMenuItem: NSMenuItem!
+    private var statusMenuItem: NSMenuItem!
+    private var recordingInfoMenuItem: NSMenuItem!
+    private var statusTimer: Timer?
+    private var recordingInfoTimer: Timer?
+
+    init(recorder: Recorder, server: SocketServer, version: String) {
+        self.recorder = recorder
+        self.server = server
+        self.version = version
+        super.init()
+    }
+
+    func setup() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.title = "●"
+
+        let menu = NSMenu()
+
+        statusMenuItem = NSMenuItem(title: "Status: Idle", action: nil, keyEquivalent: "")
+        statusMenuItem.isEnabled = false
+        menu.addItem(statusMenuItem)
+
+        recordingInfoMenuItem = NSMenuItem(title: "No active recording", action: nil, keyEquivalent: "")
+        recordingInfoMenuItem.isEnabled = false
+        menu.addItem(recordingInfoMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let listMenuItem = NSMenuItem(title: "List Windows", action: #selector(listWindows), keyEquivalent: "l")
+        listMenuItem.target = self
+        menu.addItem(listMenuItem)
+
+        let stopMenuItem = NSMenuItem(title: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s")
+        stopMenuItem.target = self
+        menu.addItem(stopMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let aboutMenuItem = NSMenuItem(title: "About WindowRecorder", action: #selector(showAbout), keyEquivalent: "")
+        aboutMenuItem.target = self
+        menu.addItem(aboutMenuItem)
+
+        updateMenuItem = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdates), keyEquivalent: "u")
+        updateMenuItem.target = self
+        menu.addItem(updateMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let quitMenuItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
+        quitMenuItem.target = self
+        menu.addItem(quitMenuItem)
+
+        statusItem.menu = menu
+
+        startStatusTimer()
+    }
+
+    private func startStatusTimer() {
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.refreshStatus()
+        }
+        statusTimer?.fire()
+    }
+
+    private func refreshStatus() {
+        if recorder.isRecording {
+            statusItem.button?.title = "●"
+            statusItem.button?.contentTintColor = .systemRed
+            statusMenuItem.title = "Status: Recording"
+            recordingInfoMenuItem.title = "Recording in progress..."
+            recordingInfoMenuItem.isHidden = false
+        } else {
+            statusItem.button?.title = "●"
+            statusItem.button?.contentTintColor = .systemGreen
+            statusMenuItem.title = "Status: Ready"
+            recordingInfoMenuItem.title = "No active recording"
+            recordingInfoMenuItem.isHidden = false
+        }
+    }
+
+    @objc func listWindows() {
+        Task {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                let windowList = content.windows.prefix(20).map { w in
+                    "  \(w.windowID)  \(w.owningApplication?.applicationName ?? "?") — \(w.title ?? "?")"
+                }.joined(separator: "\n")
+                let alert = NSAlert()
+                alert.messageText = "Available Windows"
+                alert.informativeText = windowList.isEmpty ? "No windows found" : windowList
+                alert.alertStyle = .informational
+                alert.runModal()
+            } catch {
+                showError("Failed to list windows: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @objc func stopRecording() {
+        if !recorder.isRecording {
+            showError("Not currently recording")
+            return
+        }
+        recorder.stop()
+    }
+
+    @objc func showAbout() {
+        let alert = NSAlert()
+        alert.messageText = "WindowRecorder"
+        alert.informativeText = "Version \(version)\n\nmacOS screen recording tool\nScreenCaptureKit + AVFoundation\n\nhttps://github.com/karthiknish/window-recorder-cli"
+        alert.alertStyle = .informational
+        alert.icon = NSImage(contentsOfFile: "/Applications/WindowRecorder.app/Contents/Resources/AppIcon.icns")
+        alert.runModal()
+    }
+
+    @objc func checkForUpdates() {
+        updateMenuItem.title = "Checking..."
+        updateMenuItem.isEnabled = false
+
+        Task {
+            do {
+                let url = URL(string: "https://api.github.com/repos/karthiknish/window-recorder-cli/releases/latest")!
+                let (data, _) = try await URLSession.shared.data(from: url)
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let latestVersion = (json?["tag_name"] as? String ?? "").replacingOccurrences(of: "v", with: "")
+                let releaseURL = json?["html_url"] as? String ?? ""
+                let releaseNotes = json?["body"] as? String ?? ""
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.updateMenuItem.isEnabled = true
+
+                    if latestVersion.isEmpty {
+                        self.updateMenuItem.title = "Check for Updates..."
+                        self.showError("Could not fetch latest version")
+                        return
+                    }
+
+                    if latestVersion == self.version {
+                        self.updateMenuItem.title = "Up to date (v\(self.version))"
+                        let alert = NSAlert()
+                        alert.messageText = "You're up to date!"
+                        alert.informativeText = "WindowRecorder v\(self.version) is the latest version."
+                        alert.alertStyle = .informational
+                        alert.runModal()
+                    } else {
+                        self.updateMenuItem.title = "Update available (v\(latestVersion))"
+                        let alert = NSAlert()
+                        alert.messageText = "Update available!"
+                        alert.informativeText = "v\(self.version) → v\(latestVersion)\n\n\(releaseNotes.prefix(500))\n\nDownload: \(releaseURL)"
+                        alert.alertStyle = .informational
+                        alert.addButton(withTitle: "Download")
+                        alert.addButton(withTitle: "Later")
+                        let response = alert.runModal()
+                        if response == .alertFirstButtonReturn {
+                            if let url = URL(string: releaseURL) {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.updateMenuItem.isEnabled = true
+                    self?.updateMenuItem.title = "Check for Updates..."
+                    self?.showError("Could not check for updates: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    @objc func quit() {
+        if recorder.isRecording {
+            recorder.stop()
+        }
+        NSApp.terminate(nil)
+    }
+
+    private func showError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Error"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+}
+
 // ─── App Delegate ─────────────────────────────────────────────────────
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let server = SocketServer()
+    var menuBarController: MenuBarController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory) // no dock icon
+        NSApp.setActivationPolicy(.accessory)
 
-        // Request screen capture permission
         if !CGPreflightScreenCaptureAccess() {
             CGRequestScreenCaptureAccess()
         }
 
+        let version = readVersion()
+        menuBarController = MenuBarController(recorder: server.recorder, server: server, version: version)
+        menuBarController.setup()
+
         server.start()
-        os_log("WindowRecorder Ready", log: log, type: .info)
+        os_log("WindowRecorder Ready (v%{public}s)", log: log, type: .info, version)
+    }
+
+    private func readVersion() -> String {
+        let plistPath = "/Applications/WindowRecorder.app/Contents/Info.plist"
+        if let plist = FileManager.default.contents(atPath: plistPath),
+           let dict = try? PropertyListSerialization.propertyList(from: plist, format: nil) as? [String: Any],
+           let v = dict["CFBundleShortVersionString"] as? String {
+            return v
+        }
+        return "1.0.0"
     }
 }
 

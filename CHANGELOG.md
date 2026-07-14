@@ -5,6 +5,16 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-07-15
+
+### Added
+- Menu bar UI with live status indicator (green=ready, red=recording)
+- "Check for Updates" menu item that queries GitHub releases API
+- "List Windows" menu item with alert dialog
+- "Stop Recording" menu item
+- "About" dialog showing version and app icon
+- Version display read from Info.plist
+
 ## [1.0.2] - 2026-07-15
 
 ### Fixed
