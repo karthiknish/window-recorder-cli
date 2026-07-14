@@ -49,7 +49,7 @@ jobs:
           cp ~/.local/bin/wr "$GITHUB_WORKSPACE/artifacts/wr-v${{ steps.version.outputs.version }}"
           # Package e2e tools
           cd "$GITHUB_WORKSPACE"
-          tar czf "artifacts/e2e-tools-v${{ steps.version.outputs.version }}.tar.gz" e2e/ --exclude='e2e/node_modules'
+          tar czf "artifacts/e2e-tools-v${{ steps.version.outputs.version }}.tar.gz" --exclude='e2e/node_modules' --exclude='e2e/screenshots' --exclude='e2e/recordings' --exclude='e2e/results.json' e2e/
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

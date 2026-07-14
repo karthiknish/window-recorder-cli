@@ -54,7 +54,7 @@ jobs:
 
           # Package e2e tools (excluding node_modules)
           cd "$GITHUB_WORKSPACE"
-          tar czf "artifacts/e2e-tools-v${VERSION}.tar.gz" e2e/ --exclude='e2e/node_modules'
+          tar czf "artifacts/e2e-tools-v${VERSION}.tar.gz" --exclude='e2e/node_modules' --exclude='e2e/screenshots' --exclude='e2e/recordings' --exclude='e2e/results.json' e2e/
 
           # Create install script
           cat > artifacts/install.sh << 'INSTALL_EOF'
