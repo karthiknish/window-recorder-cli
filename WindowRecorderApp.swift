@@ -616,15 +616,13 @@ final class MenuBarController: NSObject {
                         self.updateMenuItem.title = "Update available (v\(latestVersion))"
                         let alert = NSAlert()
                         alert.messageText = "Update available!"
-                        alert.informativeText = "v\(self.version) → v\(latestVersion)\n\n\(releaseNotes.prefix(500))\n\nDownload: \(releaseURL)"
+                        alert.informativeText = "v\(self.version) → v\(latestVersion)\n\n\(releaseNotes.prefix(300))"
                         alert.alertStyle = .informational
-                        alert.addButton(withTitle: "Download")
+                        alert.addButton(withTitle: "Download & Update")
                         alert.addButton(withTitle: "Later")
                         let response = alert.runModal()
                         if response == .alertFirstButtonReturn {
-                            if let url = URL(string: releaseURL) {
-                                NSWorkspace.shared.open(url)
-                            }
+                            self.downloadAndUpdate(releaseJSON: json ?? [:])
                         }
                     } else {
                         self.updateMenuItem.title = "Up to date (v\(self.version))"
@@ -636,6 +634,95 @@ final class MenuBarController: NSObject {
                     self?.updateMenuItem.isEnabled = true
                     self?.updateMenuItem.title = "Check for Updates..."
                     self?.showError("Could not check for updates: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func downloadAndUpdate(releaseJSON: [String: Any]) {
+        guard let assets = releaseJSON["assets"] as? [[String: Any]] else {
+            showError("Could not find download assets in release.")
+            return
+        }
+
+        let appZipAsset = assets.first { ($0["name"] as? String ?? "").hasSuffix(".app.zip") }
+        let cliAsset = assets.first { ($0["name"] as? String ?? "").hasPrefix("wr-v") }
+
+        guard let appAsset = appZipAsset,
+              let appDownloadURL = appAsset["browser_download_url"] as? String,
+              let appURL = URL(string: appDownloadURL) else {
+            showError("Could not find app download URL.")
+            return
+        }
+
+        updateMenuItem.title = "Downloading..."
+        updateMenuItem.isEnabled = false
+
+        Task {
+            do {
+                let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("wr-update-\(Int.random(in: 0..<999999))")
+                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+                let zipPath = tempDir.appendingPathComponent("WindowRecorder.app.zip")
+                let (zipData, _) = try await URLSession.shared.data(from: appURL)
+                try zipData.write(to: zipPath)
+
+                let cliPath = tempDir.appendingPathComponent("wr")
+                if let cliAsset = cliAsset,
+                   let cliDownloadURL = cliAsset["browser_download_url"] as? String,
+                   let cliURL = URL(string: cliDownloadURL) {
+                    let (cliData, _) = try await URLSession.shared.data(from: cliURL)
+                    try cliData.write(to: cliPath)
+                }
+
+                let unzipTask = Process()
+                unzipTask.launchPath = "/usr/bin/unzip"
+                unzipTask.arguments = ["-o", zipPath.path, "-d", tempDir.path]
+                try unzipTask.run()
+                unzipTask.waitUntilExit()
+
+                let extractedApp = tempDir.appendingPathComponent("WindowRecorder.app")
+                guard FileManager.default.fileExists(atPath: extractedApp.path) else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.updateMenuItem.isEnabled = true
+                        self?.updateMenuItem.title = "Check for Updates..."
+                        self?.showError("Downloaded zip did not contain WindowRecorder.app")
+                    }
+                    return
+                }
+
+                let script = """
+                #!/bin/bash
+                set -e
+                sleep 1
+                pkill -f "WindowRecorder" 2>/dev/null || true
+                sleep 1
+                rm -rf /Applications/WindowRecorder.app
+                cp -R "\(extractedApp.path)" /Applications/WindowRecorder.app
+                if [ -f "\(cliPath.path)" ]; then
+                    mkdir -p ~/.local/bin
+                    cp "\(cliPath.path)" ~/.local/bin/wr
+                    chmod +x ~/.local/bin/wr
+                fi
+                rm -rf "\(tempDir.path)"
+                /Applications/WindowRecorder.app/Contents/MacOS/WindowRecorder &
+                """
+
+                let scriptPath = tempDir.appendingPathComponent("update.sh")
+                try script.write(toFile: scriptPath.path, atomically: true, encoding: .utf8)
+                chmod(scriptPath.path, 0o755)
+
+                let installTask = Process()
+                installTask.launchPath = "/bin/bash"
+                installTask.arguments = [scriptPath.path]
+                try installTask.run()
+
+                NSApp.terminate(nil)
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.updateMenuItem.isEnabled = true
+                    self?.updateMenuItem.title = "Check for Updates..."
+                    self?.showError("Update failed: \(error.localizedDescription)")
                 }
             }
         }
