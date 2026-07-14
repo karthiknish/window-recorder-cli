@@ -153,6 +153,8 @@ swiftc \
   -framework Foundation \
   -O \
   "$SCRIPT_DIR/wr.swift" \
+  "$SCRIPT_DIR/chrome.swift" \
+  "$SCRIPT_DIR/mcp.swift" \
   -o "$BIN_DIR/wr" 2>&1 | grep -v warning || true
 
 chmod +x "$BIN_DIR/wr"

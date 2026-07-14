@@ -5,6 +5,18 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-07-15
+
+### Added
+- MCP server mode (`wr mcp`) — JSON-RPC over stdio with 9 tools:
+  record_chrome, record_chrome_navigate, stop_recording, recording_status,
+  chrome_screenshot, chrome_navigate, chrome_click, chrome_type, chrome_evaluate
+- Recording restricted to Chrome only (--app flag ignored)
+
+### Changed
+- Split wr.swift into wr.swift (CLI), chrome.swift (CDP), mcp.swift (MCP server)
+- chromeEvaluate now returns String for MCP integration
+
 ## [1.0.7] - 2026-07-15
 
 ### Added
