@@ -5,6 +5,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="/Applications/WindowRecorder.app"
 BIN_DIR="${HOME}/.local/bin"
+HASH_FILE="${HOME}/.local/share/window-recorder/.source_hash"
 
 # Read version from VERSION file
 VERSION_FILE="$SCRIPT_DIR/VERSION"
@@ -19,31 +20,39 @@ echo "Building WindowRecorder.app v${VERSION}..."
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 mkdir -p "$BIN_DIR"
+mkdir -p "$(dirname "$HASH_FILE")"
 
-# Copy app icon if available
-if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
-  cp "$SCRIPT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+# Ensure stable code signing for TCC persistence
+# Ad-hoc signing is used (no Developer ID available). To avoid resetting
+# TCC permissions on every build, we only recompile and re-sign when source
+# files actually change. A hash of source files is stored and compared.
+NEEDS_REBUILD=true
+CURRENT_HASH=$(cat "$SCRIPT_DIR/WindowRecorderApp.swift" "$SCRIPT_DIR/wr.swift" "$SCRIPT_DIR/VERSION" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+if [ -f "$HASH_FILE" ] && [ "$(cat "$HASH_FILE")" = "$CURRENT_HASH" ]; then
+  if codesign --verify --verbose=1 "$APP_DIR" 2>/dev/null; then
+    NEEDS_REBUILD=false
+  fi
 fi
 
-# Build the app binary
-swiftc \
-  -framework ScreenCaptureKit \
-  -framework AVFoundation \
-  -framework CoreVideo \
-  -framework CoreGraphics \
-  -framework AppKit \
-  -framework Foundation \
-  -O \
-  "$SCRIPT_DIR/WindowRecorderApp.swift" \
-  -o "$APP_DIR/Contents/MacOS/WindowRecorder" 2>&1 | grep -v warning || true
+if [ "$NEEDS_REBUILD" = true ]; then
+  echo "Source changed or first build, compiling and signing..."
 
-chmod +x "$APP_DIR/Contents/MacOS/WindowRecorder"
+  # Build the app binary
+  swiftc \
+    -framework ScreenCaptureKit \
+    -framework AVFoundation \
+    -framework CoreVideo \
+    -framework CoreGraphics \
+    -framework AppKit \
+    -framework Foundation \
+    -O \
+    "$SCRIPT_DIR/WindowRecorderApp.swift" \
+    -o "$APP_DIR/Contents/MacOS/WindowRecorder" 2>&1 | grep -v warning || true
 
-# Code sign with bundle identifier (required for TCC permissions on macOS 14+)
-codesign --force --sign - --identifier "com.falnor.window-recorder" "$APP_DIR" 2>&1 || true
+  chmod +x "$APP_DIR/Contents/MacOS/WindowRecorder"
 
-# Write Info.plist with version
-cat > "$APP_DIR/Contents/Info.plist" << EOF
+  # Write Info.plist BEFORE signing
+  cat > "$APP_DIR/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -67,6 +76,19 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 </dict>
 </plist>
 EOF
+
+  # Copy app icon if available
+  if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
+    cp "$SCRIPT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+  fi
+
+  # Ad-hoc sign with stable bundle identifier
+  codesign --force --sign - --identifier "com.falnor.window-recorder" "$APP_DIR" 2>&1 || true
+
+  echo "$CURRENT_HASH" > "$HASH_FILE"
+else
+  echo "No source changes detected, skipping rebuild (TCC permissions preserved)."
+fi
 
 echo "App built: $APP_DIR (v${VERSION})"
 

@@ -5,6 +5,14 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-07-15
+
+### Fixed
+- Repetitive TCC permission prompts on rebuild — build.sh now skips recompilation
+  and re-signing when source files haven't changed (SHA-256 hash check)
+- Info.plist now written before code signing (was invalidating the signature)
+- Removed use of revoked Apple Development certificate that caused malware warning
+
 ## [1.0.3] - 2026-07-15
 
 ### Added
