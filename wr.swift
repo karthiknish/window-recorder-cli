@@ -31,6 +31,8 @@ struct WRMain {
                 default: i += 1
                 }
             }
+            launchIfNeeded()
+            ensureChromeWithCDP()
             sendCommand(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
         case "stop":
             sendCommand(["cmd": "stop"])

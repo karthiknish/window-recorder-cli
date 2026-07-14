@@ -180,6 +180,7 @@ func handleMCPTool(name: String, args: [String: Any]) -> String {
         let duration = (args["duration"] as? Double) ?? 10
         let out = (args["out"] as? String) ?? "/tmp/recording.mov"
         launchIfNeeded()
+        ensureChromeWithCDP()
         let resp = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
         Thread.sleep(forTimeInterval: duration + 2)
         if FileManager.default.fileExists(atPath: out) {
@@ -193,10 +194,7 @@ func handleMCPTool(name: String, args: [String: Any]) -> String {
         let duration = (args["duration"] as? Double) ?? 10
         let out = (args["out"] as? String) ?? "/tmp/recording.mov"
         launchIfNeeded()
-        if cdpGetVersion() == nil {
-            chromeLaunch()
-            usleep(1_000_000)
-        }
+        ensureChromeWithCDP()
         chromeNavigate(url: url)
         usleep(1_000_000)
         _ = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])

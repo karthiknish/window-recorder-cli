@@ -161,20 +161,21 @@ func chromeLaunch() {
     }
 
     let task = Process()
-    task.launchPath = CHROME_PATH
-    var chromeArgs = ["--remote-debugging-port=\(CDP_PORT)", "--user-data-dir=/tmp/chrome-wr-profile"]
+    task.launchPath = "/usr/bin/open"
+    let chromeProfile = "/tmp/chrome-wr-profile"
+    var chromeArgs = ["-a", CHROME_PATH, "--args", "--remote-debugging-port=\(CDP_PORT)", "--user-data-dir=\(chromeProfile)"]
     if let url = url { chromeArgs.append(url) }
     task.arguments = chromeArgs
     try? task.run()
 
-    for _ in 0..<20 {
+    for _ in 0..<30 {
         usleep(500_000)
         if cdpGetVersion() != nil {
             print("Chrome launched with remote debugging on port \(CDP_PORT)")
             return
         }
     }
-    print("Error: Chrome did not start CDP within 10 seconds")
+    print("Error: Chrome did not start CDP within 15 seconds")
     exit(1)
 }
 
@@ -202,6 +203,12 @@ func chromeNavigate(url: String) {
         exit(1)
     }
     print("Navigated to: \(url)")
+    
+    let activateTask = Process()
+    activateTask.launchPath = "/usr/bin/open"
+    activateTask.arguments = ["-a", "Google Chrome"]
+    try? activateTask.run()
+    
     usleep(500_000)
 }
 
@@ -359,10 +366,7 @@ func chromeNetwork() {
 
 func chromeRecord(url: String, duration: Double, out: String) {
     launchIfNeeded()
-    if cdpGetVersion() == nil {
-        chromeLaunch()
-        usleep(1_000_000)
-    }
+    ensureChromeWithCDP()
     print("Navigating to: \(url)")
     chromeNavigate(url: url)
     usleep(1_000_000)
@@ -391,6 +395,34 @@ func launchIfNeeded() {
         launchApp()
         usleep(1_000_000)
     }
+}
+
+func ensureChromeWithCDP() {
+    if cdpGetVersion() != nil {
+        return
+    }
+
+    if !FileManager.default.fileExists(atPath: CHROME_PATH) {
+        print("Error: Google Chrome not found at \(CHROME_PATH)")
+        exit(1)
+    }
+
+    print("Launching Chrome with remote debugging...")
+    let chromeProfile = "/tmp/chrome-wr-profile"
+    let task = Process()
+    task.launchPath = "/usr/bin/open"
+    task.arguments = ["-a", CHROME_PATH, "--args", "--remote-debugging-port=\(CDP_PORT)", "--user-data-dir=\(chromeProfile)"]
+    try? task.run()
+
+    for _ in 0..<30 {
+        usleep(500_000)
+        if cdpGetVersion() != nil {
+            print("Chrome ready with CDP on port \(CDP_PORT)")
+            usleep(2_000_000)
+            return
+        }
+    }
+    print("Warning: Chrome CDP did not become ready, recording may fail")
 }
 
 func jsString(_ s: String) -> String {

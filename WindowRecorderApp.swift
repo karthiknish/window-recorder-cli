@@ -58,13 +58,15 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         self.assetWriter = writer
         self.outputPath = out
 
+        let bitRate = max(10_000_000, captureWidth * captureHeight * 4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: captureWidth,
             AVVideoHeightKey: captureHeight,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 8_000_000,
-                AVVideoMaxKeyFrameIntervalKey: 60,
+                AVVideoAverageBitRateKey: bitRate,
+                AVVideoMaxKeyFrameIntervalKey: 30,
+                AVVideoExpectedSourceFrameRateKey: 30,
             ],
         ])
         input.expectsMediaDataInRealTime = true
@@ -349,6 +351,7 @@ final class MenuBarController: NSObject {
     private var updateMenuItem: NSMenuItem!
     private var statusMenuItem: NSMenuItem!
     private var recordingInfoMenuItem: NSMenuItem!
+    private var stopMenuItem: NSMenuItem!
     private var statusTimer: Timer?
     private var recordingInfoTimer: Timer?
 
@@ -386,8 +389,9 @@ final class MenuBarController: NSObject {
         listMenuItem.target = self
         menu.addItem(listMenuItem)
 
-        let stopMenuItem = NSMenuItem(title: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s")
+        stopMenuItem = NSMenuItem(title: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s")
         stopMenuItem.target = self
+        stopMenuItem.isHidden = true
         menu.addItem(stopMenuItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -467,11 +471,13 @@ final class MenuBarController: NSObject {
             statusMenuItem.title = "Status: Recording"
             recordingInfoMenuItem.title = "Recording in progress..."
             recordingInfoMenuItem.isHidden = false
+            stopMenuItem.isHidden = false
         } else {
             statusItem.button?.image = makeCircleImage(color: .systemGreen)
             statusMenuItem.title = "Status: Ready"
             recordingInfoMenuItem.title = "No active recording"
             recordingInfoMenuItem.isHidden = false
+            stopMenuItem.isHidden = true
         }
     }
 
