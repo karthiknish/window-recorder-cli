@@ -55,7 +55,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         config.height = captureHeight
         config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.queueDepth = 5
-        config.showsCursor = true
+        config.showsCursor = false
         config.capturesAudio = false
 
         let url = URL(fileURLWithPath: out)
