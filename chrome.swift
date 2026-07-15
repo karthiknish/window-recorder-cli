@@ -230,6 +230,19 @@ func chromeNavigate(url: String) {
         print("Navigate error: \(errorText)")
         exit(1)
     }
+
+    // Wait for page load by polling document.readyState
+    let deadline = Date().addingTimeInterval(15.0)
+    while Date() < deadline {
+        if let res = cdpCommand("Runtime.evaluate", ["expression": "document.readyState", "returnByValue": true]),
+           let value = res["result"] as? [String: Any],
+           let state = value["value"] as? String,
+           state == "complete" {
+            break
+        }
+        usleep(200_000)
+    }
+
     print("Navigated to: \(url)")
 
     let activateTask = Process()
@@ -321,43 +334,86 @@ func chromeClick(selector: String, container: String? = nil, text: String? = nil
 }
 
 func chromeType(selector: String, text: String) {
-    // Step 1: Focus, clear, and set value via native setter (React-compatible)
-    let expr = """
-    (()=>{
-        const el=document.querySelector(\(jsString(selector)));
-        if(!el)return JSON.stringify({error:'element not found: \(selector)'});
-        el.focus();
-        el.scrollIntoView({block:'center'});
-        const proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
-        const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;
-        if(setter){setter.call(el,\(jsString(text)));}
-        else{el.value=\(jsString(text));}
-        el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:\(jsString(text))}));
-        el.dispatchEvent(new Event('change',{bubbles:true}));
-        return JSON.stringify({ok:true,value:el.value});
-    })()
-    """
+    // Step 1: Focus the element and clear it via JS (no input event dispatch)
+    let focusExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)return JSON.stringify({error:'element not found: \(selector)'});el.focus();el.scrollIntoView({block:'center'});const proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;if(setter)setter.call(el,'');return JSON.stringify({ok:true});})()"
 
-    guard let jsonStr = jsResultString(expr),
-          let data = jsonStr.data(using: .utf8),
-          let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    guard let focusResult = jsResultString(focusExpr),
+          let focusData = focusResult.data(using: .utf8),
+          let focusInfo = try? JSONSerialization.jsonObject(with: focusData) as? [String: Any] else {
         print("Error: type failed. Is Chrome running with CDP? Try: wr chrome launch")
         exit(1)
     }
 
-    if let error = info["error"] as? String {
+    if let error = focusInfo["error"] as? String {
         print("Error: \(error)")
         exit(1)
     }
 
-    // Step 2: Also dispatch CDP Input.insertText for trusted event listeners
-    // This helps with contenteditable or non-standard inputs
-    _ = cdpCommand("Input.insertText", ["text": text])
+    usleep(300_000)
 
-    if let value = info["value"] as? String {
-        print("typed: \(value)")
+    // Step 2: Type the full text via CDP Input.insertText (trusted event — React respects this)
+    // Need to keep the connection open longer for Chrome to process the text insertion
+    if let tab = cdpGetFirstTab(),
+       let wsUrlString = tab["webSocketDebuggerUrl"] as? String,
+       let wsUrl = URL(string: wsUrlString) {
+        let messageId = cdpMessageId
+        cdpMessageId += 1
+        let payload: [String: Any] = ["id": messageId, "method": "Input.insertText", "params": ["text": text]]
+        if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
+           let payloadStr = String(data: payloadData, encoding: .utf8) {
+            let urlSession = URLSession(configuration: .default)
+            let wsTask = urlSession.webSocketTask(with: wsUrl)
+            wsTask.resume()
+            let insertSem = DispatchSemaphore(value: 0)
+            wsTask.send(.string(payloadStr)) { _ in
+                // Wait for response
+                wsTask.receive { _ in
+                    insertSem.signal()
+                }
+            }
+            _ = insertSem.wait(timeout: .now() + 5)
+            usleep(500_000)
+            wsTask.cancel(with: .goingAway, reason: nil)
+            urlSession.invalidateAndCancel()
+        }
+    }
+    usleep(500_000)
+
+    // Step 3: Verify the value was set
+    let verifyExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)return JSON.stringify({error:'lost'});return JSON.stringify({value:el.value});})()"
+    if let verifyStr = jsResultString(verifyExpr),
+       let verifyData = verifyStr.data(using: .utf8),
+       let verifyInfo = try? JSONSerialization.jsonObject(with: verifyData) as? [String: Any],
+       let value = verifyInfo["value"] as? String {
+        if value == text {
+            print("typed: \(value)")
+            return
+        } else if !value.isEmpty {
+            print("typed: \(value)")
+            return
+        }
+    }
+
+    // Step 4: Fallback — set value via native setter WITHOUT dispatching input event
+    // This works for React controlled inputs where the setter bypasses React's event system
+    let fallbackExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));el.focus();const proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;if(setter)setter.call(el,\(jsString(text)));return JSON.stringify({value:el.value});})()"
+    if let fbStr = jsResultString(fallbackExpr),
+       let fbData = fbStr.data(using: .utf8),
+       let fbInfo = try? JSONSerialization.jsonObject(with: fbData) as? [String: Any],
+       let fbValue = fbInfo["value"] as? String {
+        if fbValue == text {
+            // Value is set in DOM. Dispatch input event AFTER a delay so React picks it up
+            // but use the tracker trick to prevent React from resetting
+            usleep(100_000)
+            let eventExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));const tracker=el._valueTracker;if(tracker){tracker.setValue(\(jsString(text)));}el.dispatchEvent(new Event('input',{bubbles:true}));return el.value;})()"
+            _ = jsResultString(eventExpr)
+            print("typed: \(fbValue)")
+        } else {
+            print("Warning: could not set value. Got: '\(fbValue)'")
+        }
     } else {
-        print("typed: \(text)")
+        print("Error: type failed")
+        exit(1)
     }
 }
 
@@ -425,12 +481,14 @@ func chromeWait(ms: Int) {
     print("Waited \(ms)ms")
 }
 
-func chromeWaitForText(selector: String, text: String, timeoutMs: Int) {
+func chromeWaitForText(selector: String, text: String, timeoutMs: Int = 120000) {
     _ = cdpCommand("Runtime.enable", [:])
     let expr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)return false;return (el.textContent||'').includes(\(jsString(text)));})()"
     let deadline = Date().addingTimeInterval(TimeInterval(timeoutMs) / 1000.0)
     var found = false
+    var lastCheck = 0
     while Date() < deadline {
+        lastCheck += 1
         if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
            let value = result["result"] as? [String: Any],
            let val = value["value"] as? Bool,
@@ -438,12 +496,16 @@ func chromeWaitForText(selector: String, text: String, timeoutMs: Int) {
             found = true
             break
         }
-        usleep(300_000)
+        if lastCheck % 10 == 0 {
+            let elapsed = Int(Date().timeIntervalSince(deadline.addingTimeInterval(-TimeInterval(timeoutMs) / 1000.0)))
+            print("  ...still waiting (\(elapsed)s elapsed, timeout \(timeoutMs / 1000)s)")
+        }
+        usleep(500_000)
     }
     if found {
         print("Found: \"\(text)\" in \"\(selector)\"")
     } else {
-        print("Timeout: \"\(text)\" not found in \"\(selector)\" within \(timeoutMs)ms")
+        print("Timeout: \"\(text)\" not found in \"\(selector)\" within \(timeoutMs / 1000)s")
         exit(1)
     }
 }
@@ -462,12 +524,93 @@ func chromeSnapshot() {
 }
 
 func chromeConsole(errorsOnly: Bool) {
-    _ = cdpCommand("Runtime.enable", [:])
-    _ = cdpCommand("Log.enable", [:])
-    print("Console log retrieval requires event listening. Use 'wr e2e' for full console capture.")
-    if let result = cdpCommand("Runtime.evaluate", ["expression": "performance.getEntries().length", "returnByValue": true]) {
-        if let value = result["result"] as? [String: Any] {
-            print("Page performance entries: \(value["value"] ?? 0)")
+    guard let tab = cdpGetFirstTab(),
+          let wsUrlString = tab["webSocketDebuggerUrl"] as? String,
+          let wsUrl = URL(string: wsUrlString) else {
+        print("Error: Cannot connect to Chrome CDP. Run 'wr chrome launch' first.")
+        exit(1)
+    }
+
+    let semaphore = DispatchSemaphore(value: 0)
+    var messages: [(type: String, text: String)] = []
+
+    let urlSession = URLSession(configuration: .default)
+    let wsTask = urlSession.webSocketTask(with: wsUrl)
+    wsTask.resume()
+
+    let messageId = cdpMessageId
+    cdpMessageId += 1
+
+    // Enable Runtime and Log
+    let enablePayload: [String: Any] = ["id": messageId, "method": "Runtime.enable", "params": [:]]
+    guard let enableData = try? JSONSerialization.data(withJSONObject: enablePayload),
+          let enableStr = String(data: enableData, encoding: .utf8) else {
+        print("Error: failed to enable Runtime")
+        exit(1)
+    }
+    wsTask.send(.string(enableStr)) { _ in }
+
+    let logId = cdpMessageId
+    cdpMessageId += 1
+    let logPayload: [String: Any] = ["id": logId, "method": "Log.enable", "params": [:]]
+    if let logData = try? JSONSerialization.data(withJSONObject: logPayload),
+       let logStr = String(data: logData, encoding: .utf8) {
+        wsTask.send(.string(logStr)) { _ in }
+    }
+
+    // Collect events for 2 seconds
+    DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+        semaphore.signal()
+    }
+
+    // Receive loop
+    func receiveLoop() {
+        wsTask.receive { result in
+            switch result {
+            case .success(.string(let text)):
+                if let data = text.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let method = json["method"] as? String {
+                        if method == "Runtime.consoleAPICalled",
+                           let params = json["params"] as? [String: Any],
+                           let type = params["type"] as? String,
+                           let args = params["args"] as? [[String: Any]] {
+                            let text = args.compactMap { $0["value"] as? String ?? $0["description"] as? String }.joined(separator: " ")
+                            messages.append((type, text))
+                        } else if method == "Log.entryAdded",
+                                  let params = json["params"] as? [String: Any],
+                                  let entry = params["entry"] as? [String: Any],
+                                  let level = entry["level"] as? String,
+                                  let text = entry["text"] as? String {
+                            messages.append((level, text))
+                        } else if method == "Runtime.exceptionThrown",
+                                  let params = json["params"] as? [String: Any],
+                                  let details = params["exceptionDetails"] as? [String: Any] {
+                            let text = (details["text"] as? String ?? "") + " " + ((details["exception"] as? [String: Any])?["description"] as? String ?? "")
+                            messages.append(("error", text))
+                        }
+                    }
+                }
+                receiveLoop()
+            default:
+                break
+            }
+        }
+    }
+    receiveLoop()
+
+    semaphore.wait()
+    wsTask.cancel(with: .goingAway, reason: nil)
+    urlSession.invalidateAndCancel()
+
+    let filtered = errorsOnly ? messages.filter { $0.type == "error" || $0.type == "warning" } : messages
+
+    if filtered.isEmpty {
+        print(errorsOnly ? "No errors in console." : "Console is empty.")
+    } else {
+        print("Console messages (\(filtered.count)):")
+        for msg in filtered {
+            print("  [\(msg.type)] \(msg.text)")
         }
     }
 }

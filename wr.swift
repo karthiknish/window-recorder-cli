@@ -82,7 +82,7 @@ func printUsage() {
       wr chrome launch [--url <url>]   Launch Chrome with remote debugging
       wr chrome tabs                   List open Chrome tabs
       wr chrome navigate <url>         Navigate current tab to URL
-      wr chrome screenshot [--out p]   Take a screenshot
+      wr chrome screenshot [--out p]   Take a screenshot (--view opens in Preview)
       wr chrome click <selector>       Click an element (trusted pointer events)
         --container <selector>         Scope click within a container element
         --text "label"                 Click element by text label (fuzzy match)
@@ -92,9 +92,9 @@ func printUsage() {
       wr chrome evaluate <expr>        Evaluate JavaScript expression
       wr chrome assert <sel> <text>    Assert element contains text
       wr chrome wait <ms>              Wait for N milliseconds
-      wr chrome wait-for-text <sel> <text> [timeout_ms]  Wait until element contains text
+      wr chrome wait-for-text <sel> <text> [timeout_ms]  Wait until element contains text (default 120s)
       wr chrome snapshot               Get page accessibility tree
-      wr chrome console [--errors]     Get console messages
+      wr chrome console [--errors]     Get console messages (real CDP event capture)
       wr chrome network                List network requests
       wr chrome record <url> <dur>     Record Chrome while navigating (non-blocking)
         --out <path>                   Output file (default: /tmp/recording.mov)
@@ -319,11 +319,20 @@ func runChrome() {
         chromeNavigate(url: args[3])
     case "screenshot":
         var out = "/tmp/screenshot.png"
+        var view = false
         var i = 3
         while i < args.count {
-            if args[i] == "--out" { out = args[i + 1]; i += 2 } else { i += 1 }
+            if args[i] == "--out" { out = args[i + 1]; i += 2 }
+            else if args[i] == "--view" { view = true; i += 1 }
+            else { i += 1 }
         }
         chromeScreenshot(out: out)
+        if view {
+            let task = Process()
+            task.launchPath = "/usr/bin/open"
+            task.arguments = ["-a", "Preview", out]
+            try? task.run()
+        }
     case "click":
         guard args.count >= 4 else { print("Usage: wr chrome click <selector> [--container <sel>] [--text \"label\"]"); exit(1) }
         var container: String? = nil
@@ -355,7 +364,7 @@ func runChrome() {
         chromeWait(ms: Int(args[3]) ?? 1000)
     case "wait-for-text":
         guard args.count >= 5 else { print("Usage: wr chrome wait-for-text <selector> <text> [timeout_ms]"); exit(1) }
-        let timeout = args.count >= 6 ? Int(args[5]) ?? 10000 : 10000
+        let timeout = args.count >= 6 ? Int(args[5]) ?? 120000 : 120000
         chromeWaitForText(selector: args[3], text: args[4], timeoutMs: timeout)
     case "snapshot":
         chromeSnapshot()
