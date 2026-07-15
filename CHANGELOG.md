@@ -5,6 +5,17 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-07-15
+
+### Added
+- MCP auto-recording: all chrome_* MCP actions (navigate, click, type, evaluate, press, scroll, etc.) now automatically start a recording if one isn't active — no more static screen recordings
+- record_chrome and record_chrome_navigate now default to duration=0 (manual stop) instead of 10s
+- recording_status now shows auto-record state and output file path
+- stop_recording returns file path and size
+
+### Fixed
+- stop_recording also stops auto-recording state
+
 ## [1.4.2] - 2026-07-15
 
 ### Fixed

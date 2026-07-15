@@ -7,7 +7,7 @@ func runMCPServer() {
     let tools: [[String: Any]] = [
         [
             "name": "record_chrome",
-            "description": "Record a Chrome window for a specified duration. Returns the path to the .mov file.",
+            "description": "Record a Chrome window. Auto-recording is also active during all chrome_* actions. Set duration=0 for manual stop. Returns the path to the .mov file.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
@@ -18,7 +18,7 @@ func runMCPServer() {
         ],
         [
             "name": "record_chrome_navigate",
-            "description": "Navigate Chrome to a URL and record the window for a specified duration. Returns the path to the .mov file.",
+            "description": "Navigate Chrome to a URL and record the window. Auto-recording is also active during all chrome_* actions. Set duration=0 for manual stop.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
@@ -31,7 +31,7 @@ func runMCPServer() {
         ],
         [
             "name": "stop_recording",
-            "description": "Stop the current recording.",
+            "description": "Stop the current recording and save the file. Also stops auto-recording.",
             "inputSchema": ["type": "object", "properties": [:]] as [String: Any]
         ],
         [
@@ -249,44 +249,107 @@ func sendJSON(_ handle: FileHandle, _ obj: [String: Any]) {
     }
 }
 
+// ─── Auto-Recording ───────────────────────────────────────────────────
+// Ensures a recording is active before chrome actions so the screen is captured
+
+var autoRecordingActive = false
+var autoRecordingOut = "/tmp/auto-recording.mov"
+
+func ensureRecordingActive() {
+    if autoRecordingActive {
+        // Check if recording is still running
+        let status = sendCommandSync(["cmd": "status"])
+        if status.contains("true") || status.contains("\"recording\":1") || status.contains("\"recording\":true") {
+            return
+        }
+        // Recording stopped — restart
+        autoRecordingActive = false
+    }
+
+    launchIfNeeded()
+    ensureChromeWithCDP()
+
+    // Start recording with no duration limit (0 = manual stop)
+    _ = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": autoRecordingOut, "duration": 0])
+    Thread.sleep(forTimeInterval: 2)
+
+    let status = sendCommandSync(["cmd": "status"])
+    if status.contains("true") || status.contains("\"recording\":1") || status.contains("\"recording\":true") {
+        autoRecordingActive = true
+    }
+}
+
+func stopAutoRecording() {
+    if autoRecordingActive {
+        _ = sendCommandSync(["cmd": "stop"])
+        autoRecordingActive = false
+        Thread.sleep(forTimeInterval: 1)
+    }
+}
+
 func handleMCPTool(name: String, args: [String: Any]) -> String {
+    // Auto-record: ensure recording is active before any chrome action
+    let chromeActions: Set<String> = [
+        "chrome_navigate", "chrome_click", "chrome_type", "chrome_evaluate",
+        "chrome_press", "chrome_scroll", "chrome_assert", "chrome_wait_for_text",
+        "chrome_snapshot", "chrome_screenshot", "chrome_tabs", "chrome_network"
+    ]
+
+    if chromeActions.contains(name) {
+        ensureRecordingActive()
+    }
+
     switch name {
     case "record_chrome":
-        let duration = (args["duration"] as? Double) ?? 10
+        let duration = (args["duration"] as? Double) ?? 0
         let out = (args["out"] as? String) ?? "/tmp/recording.mov"
+        // Stop any auto-recording first
+        stopAutoRecording()
         launchIfNeeded()
         ensureChromeWithCDP()
+        autoRecordingOut = out
         _ = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
         Thread.sleep(forTimeInterval: 2)
         let statusResp = sendCommandSync(["cmd": "status"])
         if statusResp.contains("true") || statusResp.contains("1") {
-            return "Recording started. Auto-stops in \(Int(duration))s. File: \(out). Use recording_status to check, stop_recording to stop early."
+            autoRecordingActive = true
+            return "Recording started. \(duration > 0 ? "Auto-stops in \(Int(duration))s." : "Manual stop — use stop_recording.") File: \(out)"
         }
         return "Recording may not have started. Status: \(statusResp)"
 
     case "record_chrome_navigate":
         guard let url = args["url"] as? String else { return "Error: url required" }
-        let duration = (args["duration"] as? Double) ?? 10
+        let duration = (args["duration"] as? Double) ?? 0
         let out = (args["out"] as? String) ?? "/tmp/recording.mov"
+        stopAutoRecording()
         launchIfNeeded()
         ensureChromeWithCDP()
         chromeNavigate(url: url)
         usleep(1_000_000)
+        autoRecordingOut = out
         _ = sendCommandSync(["cmd": "start", "app": "Google Chrome", "out": out, "duration": duration])
         Thread.sleep(forTimeInterval: 2)
         let statusResp = sendCommandSync(["cmd": "status"])
         if statusResp.contains("true") || statusResp.contains("1") {
-            return "Recording started after navigating to \(url). Auto-stops in \(Int(duration))s. File: \(out)."
+            autoRecordingActive = true
+            return "Recording started after navigating to \(url). \(duration > 0 ? "Auto-stops in \(Int(duration))s." : "Manual stop — use stop_recording.") File: \(out)"
         }
         return "Recording may not have started after navigating to \(url). Status: \(statusResp)"
 
     case "stop_recording":
+        stopAutoRecording()
         _ = sendCommandSync(["cmd": "stop"])
+        let out = autoRecordingOut
+        autoRecordingOut = "/tmp/auto-recording.mov"
+        if FileManager.default.fileExists(atPath: out) {
+            let size = (try? FileManager.default.attributesOfItem(atPath: out)[.size] as? Int) ?? 0
+            return "Recording stopped. File: \(out) (\(size) bytes)"
+        }
         return "Recording stopped"
 
     case "recording_status":
         let resp = sendCommandSync(["cmd": "status"])
-        return "Status: \(resp)"
+        return "Status: \(resp)\nAuto-recording: \(autoRecordingActive ? "active" : "inactive")\nFile: \(autoRecordingOut)"
 
     case "chrome_screenshot":
         let out = (args["out"] as? String) ?? "/tmp/screenshot.png"
