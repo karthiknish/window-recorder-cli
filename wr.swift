@@ -102,6 +102,9 @@ func printUsage() {
     E2E Testing:
       wr e2e [spec] [--no-record]      Run E2E test with recording
 
+    Utilities:
+      wr concat <output> <input1> ...  Concatenate recordings (requires ffmpeg)
+
     MCP Server:
       wr mcp                           Run as MCP server (JSON-RPC over stdio)
                                        Exposes Chrome recording tools to AI agents
@@ -179,6 +182,10 @@ func sendCommand(_ payload: [String: Any]) {
         }
     }
     _ = write(fd, "\n", 1)
+
+    // Set a 5-second timeout on the socket read to prevent hanging
+    var timeout = timeval(tv_sec: 5, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
     var buffer = [UInt8](repeating: 0, count: 8192)
     let n = read(fd, &buffer, buffer.count)
@@ -368,6 +375,11 @@ func runChrome() {
             if args[i] == "--out" { out = args[i + 1]; i += 2 } else { i += 1 }
         }
         chromeRecord(url: url, duration: duration, out: out)
+    case "concat":
+        guard args.count >= 5 else { print("Usage: wr concat <output.mov> <input1.mov> <input2.mov> ..."); exit(1) }
+        let output = args[3]
+        let inputs = Array(args[4..<args.count])
+        concatVideos(output: output, inputs: inputs)
     case "--help", "-h", "help":
         printChromeUsage()
     default:
@@ -419,3 +431,51 @@ func printChromeUsage() {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
+
+func concatVideos(output: String, inputs: [String]) {
+    for input in inputs {
+        if !FileManager.default.fileExists(atPath: input) {
+            print("Error: Input file not found: \(input)")
+            exit(1)
+        }
+    }
+
+    let ffmpegPaths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]
+    var ffmpegPath: String?
+    for path in ffmpegPaths {
+        if FileManager.default.fileExists(atPath: path) { ffmpegPath = path; break }
+    }
+    guard let ffmpeg = ffmpegPath else {
+        print("Error: ffmpeg not found. Install with: brew install ffmpeg")
+        exit(1)
+    }
+
+    let tempDir = NSTemporaryDirectory() + "wr_concat_\(Int.random(in: 0..<999999))/"
+    try? FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+
+    let listPath = tempDir + "concat_list.txt"
+    var listContent = ""
+    for input in inputs {
+        listContent += "file '\(input)'\n"
+    }
+    try? listContent.write(toFile: listPath, atomically: true, encoding: .utf8)
+
+    let task = Process()
+    task.launchPath = ffmpeg
+    task.arguments = ["-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", output]
+    let stderrPipe = Pipe()
+    task.standardError = stderrPipe
+    try? task.run()
+    task.waitUntilExit()
+
+    try? FileManager.default.removeItem(atPath: tempDir)
+
+    if task.terminationStatus == 0 {
+        let size = (try? FileManager.default.attributesOfItem(atPath: output)[.size] as? Int) ?? 0
+        print("Concatenated \(inputs.count) videos → \(output) (\(size) bytes)")
+    } else {
+        let error = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        print("Error: ffmpeg failed: \(error.trimmingCharacters(in: .whitespacesAndNewlines))")
+        exit(1)
+    }
+}

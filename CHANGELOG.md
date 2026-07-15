@@ -5,6 +5,17 @@ All notable changes to WindowRecorder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-15
+
+### Fixed
+- Click: rewritten with single-pass JS evaluation — finds element, scrolls, gets coords, dispatches trusted mouse events in one flow. Returns debug info (element count, sample texts) on failure
+- Type: rewritten to use native value setter + InputEvent in one JS call (no more char-by-char loop that only typed 1 char). Also dispatches CDP Input.insertText for trusted event listeners
+- Click --text: now correctly searches textContent of all clickable elements (button, a, [role=button], input[type=submit])
+- wr stop: 5-second socket read timeout prevents hanging
+
+### Added
+- wr concat <output> <input1> <input2> ... — merge recordings with ffmpeg
+
 ## [1.3.3] - 2026-07-15
 
 ### Fixed

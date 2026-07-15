@@ -120,22 +120,52 @@ func cdpCommand(_ method: String, _ params: [String: Any]) -> [String: Any]? {
     return responseResult
 }
 
+// ─── Helper: evaluate JS and return result value ─────────────────────
+
+func jsEval(_ expression: String) -> [String: Any]? {
+    _ = cdpCommand("Runtime.enable", [:])
+    return cdpCommand("Runtime.evaluate", ["expression": expression, "returnByValue": true, "awaitPromise": true])
+}
+
+func jsResultString(_ expression: String) -> String? {
+    guard let result = jsEval(expression),
+          let value = result["result"] as? [String: Any] else {
+        if let result = jsEval(expression),
+           let exc = result["exceptionDetails"] as? [String: Any] {
+            print("JS error: \(exc["text"] ?? "unknown")")
+        }
+        return nil
+    }
+    if let s = value["value"] as? String { return s }
+    if let s = value["description"] as? String { return s }
+    return nil
+}
+
 // ─── Helper: get element coordinates via JS ───────────────────────────
 
 func getElementCenter(selector: String, container: String? = nil) -> (x: Double, y: Double)? {
-    _ = cdpCommand("Runtime.enable", [:])
     let rootExpr = container != nil ? "document.querySelector(\(jsString(container!)))" : "document"
-    let expr = "(()=>{const root=\(rootExpr);if(!root)return null;const el=root.querySelector(\(jsString(selector)));if(!el)return null;const r=el.getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height});})()"
-    if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
-       let value = result["result"] as? [String: Any],
-       let jsonStr = value["value"] as? String,
-       let data = jsonStr.data(using: .utf8),
-       let coords = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-       let x = coords["x"] as? Double,
-       let y = coords["y"] as? Double {
-        return (x, y)
+    let expr = "(()=>{const root=\(rootExpr);if(!root)return JSON.stringify({error:'container not found'});const el=root.querySelector(\(jsString(selector)));if(!el)return JSON.stringify({error:'element not found'});const r=el.getBoundingClientRect();if(r.width===0||r.height===0)return JSON.stringify({error:'element has zero size'});return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height});})()"
+    guard let jsonStr = jsResultString(expr),
+          let data = jsonStr.data(using: .utf8),
+          let coords = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return nil
     }
-    return nil
+    if let error = coords["error"] as? String {
+        print("Debug: \(error) for selector: \(selector)")
+        return nil
+    }
+    guard let x = coords["x"] as? Double,
+          let y = coords["y"] as? Double else {
+        // Try parsing as NSNumber
+        let xVal = (coords["x"] as? NSNumber)?.doubleValue
+        let yVal = (coords["y"] as? NSNumber)?.doubleValue
+        if let x = xVal, let y = yVal {
+            return (x, y)
+        }
+        return nil
+    }
+    return (x, y)
 }
 
 // ─── Chrome Commands ──────────────────────────────────────────────────
@@ -226,46 +256,47 @@ func chromeScreenshot(out: String) {
 
 // Trusted click using CDP Input.dispatchMouseEvent (real pointer events)
 func chromeClick(selector: String, container: String? = nil, text: String? = nil) {
-    var actualSelector = selector
+    // Step 1: Find the element and get its coordinates
+    let rootExpr = container != nil ? "document.querySelector(\(jsString(container!)))" : "document"
+
+    let findExpr: String
+    if let text = text {
+        // Find by text: search all clickable elements for matching textContent
+        findExpr = "(()=>{const root=\(rootExpr);if(!root)return JSON.stringify({error:'container not found: \(container ?? "")'});const els=[...root.querySelectorAll('button,a,[role=button],input[type=submit]')];const el=els.find(e=>(e.textContent||'').trim().includes(\(jsString(text))));if(!el)return JSON.stringify({error:'no element with text: \(text)',count:els.length,samples:els.slice(0,5).map(e=>e.textContent.trim().substring(0,30))});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height,text:el.textContent.trim().substring(0,50),tag:el.tagName});})()"
+    } else {
+        // Find by CSS selector
+        findExpr = "(()=>{const root=\(rootExpr);if(!root)return JSON.stringify({error:'container not found: \(container ?? "")'});const el=root.querySelector(\(jsString(selector)));if(!el)return JSON.stringify({error:'element not found: \(selector)',tagCount:root.querySelectorAll('*').length});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height,tag:el.tagName});})()"
+    }
+
+    guard let jsonStr = jsResultString(findExpr),
+          let data = jsonStr.data(using: .utf8),
+          let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        print("Error: Could not evaluate selector. Is Chrome running with CDP? Try: wr chrome launch")
+        exit(1)
+    }
+
+    if let error = info["error"] as? String {
+        print("Error: \(error)")
+        if let count = info["count"] as? Int { print("  Found \(count) clickable elements total") }
+        if let samples = info["samples"] as? [String] { print("  Sample texts: \(samples.joined(separator: ", "))") }
+        if let tagCount = info["tagCount"] as? Int { print("  Page has \(tagCount) total elements") }
+        exit(1)
+    }
+
+    guard let x = (info["x"] as? Double) ?? (info["x"] as? NSNumber)?.doubleValue,
+          let y = (info["y"] as? Double) ?? (info["y"] as? NSNumber)?.doubleValue else {
+        print("Error: Could not get element coordinates")
+        exit(1)
+    }
 
     if let text = text {
-        _ = cdpCommand("Runtime.enable", [:])
-        let rootExpr = container != nil ? "document.querySelector(\(jsString(container!)))" : "document"
-        let expr = "(()=>{const root=\(rootExpr);if(!root)return null;const els=[...root.querySelectorAll('button,a,[role=button],input[type=submit],div[onclick]')];const el=els.find(e=>(e.textContent||'').trim().includes(\(jsString(text)));if(!el)return null;return JSON.stringify({text:el.textContent.trim().substring(0,50),tag:el.tagName,x:0,y:0});})()"
-        if let result = cdpCommand("Runtime.evaluate", ["expression": expr, "returnByValue": true]),
-           let value = result["result"] as? [String: Any],
-           let jsonStr = value["value"] as? String,
-           let data = jsonStr.data(using: .utf8),
-           let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            print("Found element by text: \"\(info["text"] ?? "")\" (\(info["tag"] ?? "?"))")
-        } else {
-            print("Error: No element with text \"\(text)\" found\(container != nil ? " in \(container!)" : "")")
-            exit(1)
-        }
-        actualSelector = "button, a, [role=button], input[type=submit], div[onclick]"
+        print("Found: \"\(info["text"] ?? "")\" (\(info["tag"] ?? "?"))")
     }
 
-    guard let coords = getElementCenter(selector: actualSelector, container: container) else {
-        print("Error: Element not found: \(actualSelector)\(container != nil ? " in \(container!)" : "")")
-        exit(1)
-    }
+    // Wait for scroll to settle
+    usleep(300_000)
 
-    // Scroll into view first
-    let rootExpr = container != nil ? "document.querySelector(\(jsString(container!)))" : "document"
-    let scrollExpr = "(()=>{const root=\(rootExpr);if(!root)return;const el=root.querySelector(\(jsString(actualSelector)));if(el)el.scrollIntoView({block:'center'});})()"
-    _ = cdpCommand("Runtime.evaluate", ["expression": scrollExpr, "returnByValue": true])
-    usleep(200_000)
-
-    // Re-get coords after scroll
-    guard let finalCoords = getElementCenter(selector: actualSelector, container: container) else {
-        print("Error: Element lost after scroll: \(actualSelector)")
-        exit(1)
-    }
-
-    let x = finalCoords.x
-    let y = finalCoords.y
-
-    // Dispatch trusted mouse events via CDP
+    // Step 2: Dispatch trusted mouse events via CDP
     _ = cdpCommand("Input.dispatchMouseEvent", [
         "type": "mouseMoved",
         "x": x,
@@ -286,54 +317,47 @@ func chromeClick(selector: String, container: String? = nil, text: String? = nil
         "clickCount": 1,
     ])
 
-    print("Clicked: \(actualSelector) at (\(Int(x)), \(Int(y)))\(container != nil ? " in \(container!)" : "")")
+    print("Clicked: \(text != nil ? "\"\(text!)\"" : selector) at (\(Int(x)), \(Int(y)))\(container != nil ? " in \(container!)" : "")")
 }
 
 func chromeType(selector: String, text: String) {
-    _ = cdpCommand("Runtime.enable", [:])
-    // Focus and clear the element first
-    let focusExpr = "(()=>{const el=document.querySelector(\(jsString(selector)));if(!el)throw new Error('Not found: \(selector)');el.focus();el.scrollIntoView({block:'center'});const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;if(setter)setter.call(el,'');el.dispatchEvent(new Event('input',{bubbles:true}));return 'focused';})()"
-    if let result = cdpCommand("Runtime.evaluate", ["expression": focusExpr, "returnByValue": true]),
-       let value = result["result"] as? [String: Any],
-       let resultValue = value["value"] as? String {
-        if resultValue != "focused" {
-            print("Error: \(resultValue)")
-            exit(1)
-        }
-    } else if let result = cdpCommand("Runtime.evaluate", ["expression": focusExpr, "returnByValue": true]),
-              let exception = result["exceptionDetails"] as? [String: Any] {
-        print("Error: \(exception["text"] ?? "focus failed")")
-        exit(1)
-    }
-    usleep(100_000)
-
-    // Type each character via CDP Input.insertText (trusted text insertion)
-    for char in text {
-        let charStr = String(char)
-        _ = cdpCommand("Input.insertText", ["text": charStr])
-    }
-    usleep(100_000)
-
-    // Dispatch React-compatible events via native setter + InputEvent
-    let reactExpr = """
+    // Step 1: Focus, clear, and set value via native setter (React-compatible)
+    let expr = """
     (()=>{
         const el=document.querySelector(\(jsString(selector)));
-        if(!el)return 'not found';
-        const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set
-            ||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;
-        if(setter)setter.call(el,\(jsString(text)));
+        if(!el)return JSON.stringify({error:'element not found: \(selector)'});
+        el.focus();
+        el.scrollIntoView({block:'center'});
+        const proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+        const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;
+        if(setter){setter.call(el,\(jsString(text)));}
+        else{el.value=\(jsString(text));}
         el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:\(jsString(text))}));
         el.dispatchEvent(new Event('change',{bubbles:true}));
-        return 'typed: '+el.value;
+        return JSON.stringify({ok:true,value:el.value});
     })()
     """
-    if let result = cdpCommand("Runtime.evaluate", ["expression": reactExpr, "returnByValue": true]),
-       let value = result["result"] as? [String: Any],
-       let resultValue = value["value"] as? String {
-        print(resultValue)
-    } else {
+
+    guard let jsonStr = jsResultString(expr),
+          let data = jsonStr.data(using: .utf8),
+          let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         print("Error: type failed. Is Chrome running with CDP? Try: wr chrome launch")
         exit(1)
+    }
+
+    if let error = info["error"] as? String {
+        print("Error: \(error)")
+        exit(1)
+    }
+
+    // Step 2: Also dispatch CDP Input.insertText for trusted event listeners
+    // This helps with contenteditable or non-standard inputs
+    _ = cdpCommand("Input.insertText", ["text": text])
+
+    if let value = info["value"] as? String {
+        print("typed: \(value)")
+    } else {
+        print("typed: \(text)")
     }
 }
 
